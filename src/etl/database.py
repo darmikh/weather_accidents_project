@@ -1,7 +1,7 @@
 import os
 import requests
 from dotenv import load_dotenv
-from etl.logger_config import get_logger
+from logger_config import get_logger
 
 load_dotenv()
 
@@ -9,26 +9,44 @@ url = os.getenv('SUPABASE_URL')
 key = os.getenv('SUPABASE_KEY')
 yandex_apikey = os.getenv('YANDEX_APIKEY')
 
+# Получаем параметры для прямого подключения к БД
+db_user = os.getenv('SUPABASE_DB_USER')
+db_password = os.getenv('SUPABASE_DB_PASSWORD')
+db_host = os.getenv('SUPABASE_DB_HOST')
+db_name = os.getenv('SUPABASE_DB_NAME')
+
 logger = get_logger('database')
 
-if not url or not key:
-    logger.error("Проверьте .env файл - отсутствуют SUPABASE_URL или SUPABASE_KEY")
-    raise ValueError("Проверьте .env файл")
+# Проверяем наличие хотя бы одного способа подключения
+has_rest = url and key
+has_direct = db_user and db_password and db_host and db_name
+
+if not has_rest and not has_direct:
+    logger.error("Нет данных для подключения к Supabase. Нужны либо SUPABASE_URL/KEY, либо SUPABASE_DB_* переменные")
+    raise ValueError("Отсутствуют параметры подключения к Supabase")
 
 class SupabaseClient:
     
     def __init__(self):
-        self.url = url.rstrip('/')
+        self.url = url.rstrip('/') if url else None
         self.key = key
-        self.headers = {
-            'apikey': self.key,
-            'Authorization': f'Bearer {self.key}',
-            'Content-Type': 'application/json',
-            'Prefer': 'return=representation'
-        }
-        logger.info("Supabase клиент инициализирован")
+        self.headers = None
+        if self.url and self.key:
+            self.headers = {
+                'apikey': self.key,
+                'Authorization': f'Bearer {self.key}',
+                'Content-Type': 'application/json',
+                'Prefer': 'return=representation'
+            }
+            logger.info("Supabase REST клиент инициализирован")
+        else:
+            logger.info("REST клиент не инициализирован (используется только прямой доступ к БД)")
     
     def test_connection(self):
+        """Проверка подключения (если есть REST)"""
+        if not self.headers:
+            logger.warning("REST API не доступен, пропускаем проверку")
+            return True
         try:
             response = requests.get(
                 f"{self.url}/rest/v1/raw_cities",
@@ -47,6 +65,10 @@ class SupabaseClient:
             return False
     
     def insert_raw_city(self, city_data):
+        """Вставка сырого города (только через REST)"""
+        if not self.headers:
+            logger.error("REST API не доступен для вставки raw_city")
+            return None
         try:
             response = requests.post(
                 f"{self.url}/rest/v1/raw_cities",
@@ -73,7 +95,10 @@ class SupabaseClient:
         return None
     
     def raw_city_exists(self, city_name, region):
-        """Проверяет, есть ли уже сырой город в БД"""
+        """Проверка существования сырого города (только через REST)"""
+        if not self.headers:
+            logger.error("REST API не доступен для проверки raw_city")
+            return False
         try:
             response = requests.get(
                 f"{self.url}/rest/v1/raw_cities",
@@ -91,9 +116,13 @@ class SupabaseClient:
             return False
         except Exception as e:
             logger.error(f"Ошибка проверки raw_city {city_name}: {e}")
-            return False   
+            return False
     
     def insert_city(self, city_data):
+        """Вставка города (только через REST)"""
+        if not self.headers:
+            logger.error("REST API не доступен для вставки city")
+            return None
         try:
             response = requests.post(
                 f"{self.url}/rest/v1/cities",
@@ -120,6 +149,10 @@ class SupabaseClient:
         return None
     
     def get_raw_cities_pending(self):
+        """Получение сырых городов (только через REST)"""
+        if not self.headers:
+            logger.error("REST API не доступен для получения raw_cities")
+            return []
         try:
             logger.debug("Запрос списка raw_cities со статусом 'pending'")
             response = requests.get(
@@ -142,13 +175,17 @@ class SupabaseClient:
             return []
     
     def update_raw_city_status(self, raw_city_id, status, error_message=None):
+        """Обновление статуса (только через REST)"""
+        if not self.headers:
+            logger.error("REST API не доступен для обновления статуса")
+            return False
         try:
             update_data = {"status": status}
             if error_message:
                 update_data["error_message"] = error_message
                 logger.warning(f"Обновление статуса raw_city ID {raw_city_id} на '{status}' с ошибкой: {error_message[:50]}...")
             else:
-                logger.info(f"Обновление статуса raw_city ID {raw_city_id} на '{status}'")
+                logger.debug(f"Обновление статуса raw_city ID {raw_city_id} на '{status}'")
                 
             response = requests.patch(
                 f"{self.url}/rest/v1/raw_cities?id=eq.{raw_city_id}",
@@ -169,6 +206,10 @@ class SupabaseClient:
             return False
     
     def city_exists(self, city_name, region):
+        """Проверка существования города (только через REST)"""
+        if not self.headers:
+            logger.error("REST API не доступен для проверки city")
+            return False
         try:
             logger.debug(f"Проверка существования города {city_name}, {region}")
             response = requests.get(
@@ -196,7 +237,6 @@ class SupabaseClient:
         except Exception as e:
             logger.error(f"Ошибка проверки города {city_name}: {e}")
             return False
-        
 
 db = SupabaseClient()
 logger.info("Модуль database.py загружен, клиент Supabase готов")
