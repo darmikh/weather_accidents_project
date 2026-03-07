@@ -10,10 +10,15 @@ sys.path.append(str(src_path))
 
 import requests
 import time
+from sqlalchemy import create_engine, text
+import os
+from dotenv import load_dotenv
 from database import db
 from etl.logger_config import get_logger
 
 logger = get_logger('weather_etl')
+
+load_dotenv()
 
 BASE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
@@ -44,28 +49,156 @@ HOURLY_PARAMS = [
     "terrestrial_radiation"     # земная радиация
 ]
 
-def get_active_cities():
-    """Получить активные города (те, для которых is_active = true)"""
-    logger.info("Получение списка активных городов")
-    resp = requests.get(
-        f"{db.url}/rest/v1/cities",
-        headers=db.headers,
-        params={"is_active": "eq.true", "select": "id,city_name,latitude,longitude"}
-    )
+def get_db_connection():
+    """Создает подключение к базе данных через SQLAlchemy"""
+    user = os.getenv('SUPABASE_DB_USER')
+    password = os.getenv('SUPABASE_DB_PASSWORD')
+    host = os.getenv('SUPABASE_DB_HOST')
+    db_name = os.getenv('SUPABASE_DB_NAME')
     
-    if resp.status_code != 200 or not resp.json():
-        logger.warning("Нет активных городов или ошибка БД")
+    if not all([user, password, host, db_name]):
+        logger.error("Не найдены переменные окружения для подключения к БД")
+        return None
+    
+    database_url = f'postgresql+psycopg2://{user}:{password}@{host}:5432/{db_name}'
+    return create_engine(database_url)
+
+def get_active_cities():
+    """Получить активные города через прямой SQL-запрос"""
+    logger.info("Получение списка активных городов")
+    
+    engine = get_db_connection()
+    if not engine:
         return []
     
-    cities = resp.json()
-    logger.info(f"Найдено активных городов: {len(cities)}")
-    for city in cities:
-        logger.debug(f"  - {city['city_name']} (ID: {city['id']})")
-        
-    return cities
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT id, city_name, latitude, longitude FROM cities WHERE is_active = true")
+            )
+            cities = []
+            for row in result:
+                cities.append({
+                    'id': str(row[0]),  # UUID в строку
+                    'city_name': row[1],
+                    'latitude': row[2],
+                    'longitude': row[3]
+                })
+            
+            logger.info(f"Найдено активных городов: {len(cities)}")
+            for city in cities:
+                logger.debug(f"  - {city['city_name']} (ID: {city['id']})")
+            
+            return cities
+    except Exception as e:
+        logger.error(f"Ошибка при получении городов: {e}")
+        return []
+
+def check_month_loaded(city_id, start_date, end_date, engine):
+    """Проверяет, загружен ли уже месяц через прямой SQL"""
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id FROM raw_weather_data 
+                    WHERE city_id = :city_id 
+                    AND start_date = :start_date 
+                    AND end_date = :end_date 
+                    AND source = 'open-meteo-full'
+                """),
+                {"city_id": city_id, "start_date": start_date, "end_date": end_date}
+            )
+            return result.first() is not None
+    except Exception as e:
+        logger.error(f"Ошибка при проверке загруженного месяца: {e}")
+        return False
+
+def save_raw_weather_data(city_id, start_date, end_date, raw_data, engine):
+    """Сохраняет сырые данные через прямой SQL"""
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    INSERT INTO raw_weather_data 
+                    (city_id, latitude, longitude, start_date, end_date, 
+                     request_url, response_status, hourly_data, source)
+                    VALUES 
+                    (:city_id, :latitude, :longitude, :start_date, :end_date,
+                     :request_url, :response_status, :hourly_data, :source)
+                    RETURNING id
+                """),
+                {
+                    "city_id": city_id,
+                    "latitude": raw_data['latitude'],
+                    "longitude": raw_data['longitude'],
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "request_url": raw_data['request_url'],
+                    "response_status": raw_data['response_status'],
+                    "hourly_data": raw_data['hourly_data'],
+                    "source": 'open-meteo-full'
+                }
+            )
+            conn.commit()
+            row = result.first()
+            return row[0] if row else None
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении raw данных: {e}")
+        return None
+
+def save_hourly_weather(records, engine):
+    """Сохраняет почасовые данные через прямой SQL"""
+    if not records:
+        return 0
+    
+    saved = 0
+    batch_size = 300
+    
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i+batch_size]
+        try:
+            with engine.connect() as conn:
+                for record in batch:
+                    conn.execute(
+                        text("""
+                            INSERT INTO weather_hourly 
+                            (city_id, datetime, temperature_2m, relative_humidity_2m,
+                             dew_point_2m, apparent_temperature, precipitation, rain,
+                             snowfall, snow_depth, pressure_msl, surface_pressure,
+                             cloud_cover, cloud_cover_low, cloud_cover_mid, cloud_cover_high,
+                             wind_speed_10m, wind_speed_100m, wind_direction_100m,
+                             wind_gusts_10m, shortwave_radiation, direct_radiation,
+                             diffuse_radiation, direct_normal_irradiance, terrestrial_radiation,
+                             raw_weather_id)
+                            VALUES 
+                            (:city_id, :datetime, :temperature_2m, :relative_humidity_2m,
+                             :dew_point_2m, :apparent_temperature, :precipitation, :rain,
+                             :snowfall, :snow_depth, :pressure_msl, :surface_pressure,
+                             :cloud_cover, :cloud_cover_low, :cloud_cover_mid, :cloud_cover_high,
+                             :wind_speed_10m, :wind_speed_100m, :wind_direction_100m,
+                             :wind_gusts_10m, :shortwave_radiation, :direct_radiation,
+                             :diffuse_radiation, :direct_normal_irradiance, :terrestrial_radiation,
+                             :raw_weather_id)
+                            ON CONFLICT (city_id, datetime) DO NOTHING
+                        """),
+                        record
+                    )
+                conn.commit()
+                saved += len(batch)
+                logger.debug(f"Сохранено {len(batch)} записей")
+        except Exception as e:
+            logger.error(f"Ошибка при сохранении почасовых данных: {e}")
+    
+    return saved
 
 def load_full_weather():
     logger.info("Запуск загрузки погодных данных")
+    
+    engine = get_db_connection()
+    if not engine:
+        logger.error("Не удалось подключиться к базе данных")
+        return
+    
     cities = get_active_cities()
     if not cities:
         logger.error("Нет активных городов для загрузки погоды")
@@ -93,18 +226,7 @@ def load_full_weather():
                 logger.info(f"Загрузка за {year}-{month:02d}...")
                 
                 # Проверяем, не загружены ли уже полные данные
-                resp_check = requests.get(
-                    f"{db.url}/rest/v1/raw_weather_data",
-                    headers=db.headers,
-                    params={
-                        "city_id": f"eq.{city['id']}",
-                        "start_date": f"eq.{start}",
-                        "end_date": f"eq.{end}",
-                        "source": f"eq.open-meteo-full"
-                    }
-                )
-                
-                if resp_check.status_code == 200 and resp_check.json():
+                if check_month_loaded(city['id'], start, end, engine):
                     logger.debug(f"Данные за {year}-{month:02d} уже есть в БД, пропускаем")
                     continue
                 
@@ -127,31 +249,23 @@ def load_full_weather():
                         time.sleep(2)
                         continue
                     
-                    # Сохраняем ПОЛНЫЕ raw данные
+                    # Подготавливаем сырые данные
                     raw_data = {
-                        'city_id': city['id'],
                         'latitude': city['latitude'],
                         'longitude': city['longitude'],
-                        'start_date': start,
-                        'end_date': end,
                         'request_url': api_resp.url,
                         'response_status': api_resp.status_code,
                         'hourly_data': api_resp.json(),
-                        'source': 'open-meteo-full'
                     }
                     
-                    raw_resp = requests.post(
-                        f"{db.url}/rest/v1/raw_weather_data",
-                        headers=db.headers,
-                        json=raw_data
-                    )
+                    # Сохраняем сырые данные
+                    raw_id = save_raw_weather_data(city['id'], start, end, raw_data, engine)
                     
-                    if raw_resp.status_code != 201:
-                        logger.error(f"Ошибка сохранения RAW данных для {city['city_name']} {year}-{month:02d}. Статус: {raw_resp.status_code}")
+                    if not raw_id:
+                        logger.error(f"Ошибка сохранения RAW данных для {city['city_name']} {year}-{month:02d}")
                         time.sleep(2)
                         continue
-
-                    raw_id = raw_resp.json()[0]['id']
+                    
                     logger.debug(f"RAW данные сохранены для {city['city_name']} {year}-{month:02d}, ID: {raw_id}")
                     
                     # Сохраняем почасовые данные
@@ -196,17 +310,7 @@ def load_full_weather():
                         records.append(record)
                     
                     # Вставляем пачками
-                    saved = 0
-                    batch_size = 300  
-                    for i in range(0, len(records), batch_size):
-                        batch = records[i:i+batch_size]
-                        resp = requests.post(
-                            f"{db.url}/rest/v1/weather_hourly",
-                            headers={**db.headers, 'Prefer': 'resolution=merge-duplicates'},
-                            json=batch
-                        )
-                        if resp.status_code == 201:
-                            saved += len(batch)
+                    saved = save_hourly_weather(records, engine)
                     
                     logger.info(f"  {year}-{month:02d}... загружено {saved} записей")
                     
