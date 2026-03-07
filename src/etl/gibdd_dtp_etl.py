@@ -9,6 +9,8 @@ import time
 from datetime import datetime
 import json
 import os
+from sqlalchemy import create_engine, text
+from dotenv import load_dotenv
 
 src_path = Path(__file__).parent.parent
 sys.path.append(str(src_path))
@@ -17,6 +19,8 @@ from database import db
 from etl.logger_config import get_logger
 
 logger = get_logger('gibdd_dtp_full')
+
+load_dotenv()
 
 API_URL = "http://stat.gibdd.ru/map/getDTPCardData"
 HEADERS = {
@@ -29,70 +33,153 @@ MAX_RETRIES = 3
 PAGE_SIZE = 1000
 BATCH_SIZE = 50
 
+def get_db_connection():
+    """Создает подключение к базе данных через SQLAlchemy"""
+    user = os.getenv('SUPABASE_DB_USER')
+    password = os.getenv('SUPABASE_DB_PASSWORD')
+    host = os.getenv('SUPABASE_DB_HOST')
+    db_name = os.getenv('SUPABASE_DB_NAME')
+    
+    if not all([user, password, host, db_name]):
+        logger.error("Не найдены переменные окружения для подключения к БД")
+        return None
+    
+    database_url = f'postgresql+psycopg2://{user}:{password}@{host}:5432/{db_name}'
+    return create_engine(database_url)
+
 def get_active_cities():
-    response = requests.get(
-        f"{db.url}/rest/v1/cities",
-        headers=db.headers,
-        params={"is_active": "eq.true", "select": "id,city_name,gibdd_region_id,gibdd_district_id"}
-    )
-    return response.json() if response.status_code == 200 else []
-
-def get_last_loaded_month(city_id):
-    response = requests.get(
-        f"{db.url}/rest/v1/dtp_load_log",
-        headers=db.headers,
-        params={
-            "city_id": f"eq.{city_id}",
-            "load_status": "eq.success",
-            "order": "year.desc,month.desc",
-            "limit": 1,
-            "select": "year,month"
-        }
-    )
-    if response.status_code == 200 and response.json():
-        last = response.json()[0]
-        return last['year'], last['month']
-    return None, None
-
-def month_loaded(city_id, year, month):
-    response = requests.get(
-        f"{db.url}/rest/v1/dtp_load_log",
-        headers=db.headers,
-        params={
-            "city_id": f"eq.{city_id}",
-            "year": f"eq.{year}",
-            "month": f"eq.{month}",
-            "load_status": "eq.success",
-            "select": "id"
-        }
-    )
-    return response.status_code == 200 and bool(response.json())
-
-def add_to_retry_queue(city_id, year, month, error):
+    """Получить активные города через прямой SQL-запрос"""
+    engine = get_db_connection()
+    if not engine:
+        return []
+    
     try:
-        check = requests.get(
-            f"{db.url}/rest/v1/dtp_retry_queue",
-            headers=db.headers,
-            params={
-                "city_id": f"eq.{city_id}",
-                "year": f"eq.{year}",
-                "month": f"eq.{month}",
-                "status": "eq.pending"
-            }
-        )
-        
-        if check.status_code == 200 and not check.json():
-            queue_entry = {
-                'city_id': str(city_id),
-                'year': year,
-                'month': month,
-                'last_error': error[:200] if error else 'Connection error',
-                'next_retry_time': datetime.now().isoformat()
-            }
-            requests.post(f"{db.url}/rest/v1/dtp_retry_queue", headers=db.headers, json=queue_entry)
-    except:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id, city_name, gibdd_region_id, gibdd_district_id 
+                    FROM cities 
+                    WHERE is_active = true
+                """)
+            )
+            cities = []
+            for row in result:
+                cities.append({
+                    'id': str(row[0]),
+                    'city_name': row[1],
+                    'gibdd_region_id': row[2],
+                    'gibdd_district_id': row[3]
+                })
+            return cities
+    except Exception as e:
+        logger.error(f"Ошибка при получении активных городов: {e}")
+        return []
+
+def get_last_loaded_month(city_id, engine):
+    """Получить последний загруженный месяц для города"""
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT year, month FROM dtp_load_log 
+                    WHERE city_id = :city_id 
+                    AND load_status = 'success'
+                    ORDER BY year DESC, month DESC
+                    LIMIT 1
+                """),
+                {"city_id": city_id}
+            )
+            row = result.first()
+            if row:
+                return row[0], row[1]
+            return None, None
+    except Exception as e:
+        logger.error(f"Ошибка при получении последнего месяца: {e}")
+        return None, None
+
+def month_loaded(city_id, year, month, engine):
+    """Проверить, загружен ли уже месяц"""
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    SELECT id FROM dtp_load_log 
+                    WHERE city_id = :city_id 
+                    AND year = :year 
+                    AND month = :month 
+                    AND load_status = 'success'
+                """),
+                {"city_id": city_id, "year": year, "month": month}
+            )
+            return result.first() is not None
+    except Exception as e:
+        logger.error(f"Ошибка при проверке загруженного месяца: {e}")
+        return False
+
+def add_to_retry_queue(city_id, year, month, error, engine):
+    """Добавить месяц в очередь повторной обработки"""
+    try:
+        # Проверяем, есть ли уже в очереди
+        with engine.connect() as conn:
+            check = conn.execute(
+                text("""
+                    SELECT id FROM dtp_retry_queue 
+                    WHERE city_id = :city_id 
+                    AND year = :year 
+                    AND month = :month 
+                    AND status = 'pending'
+                """),
+                {"city_id": city_id, "year": year, "month": month}
+            )
+            
+            if not check.first():
+                # Добавляем в очередь
+                conn.execute(
+                    text("""
+                        INSERT INTO dtp_retry_queue 
+                        (city_id, year, month, last_error, next_retry_time, status)
+                        VALUES 
+                        (:city_id, :year, :month, :last_error, NOW(), 'pending')
+                    """),
+                    {
+                        "city_id": city_id,
+                        "year": year,
+                        "month": month,
+                        "last_error": error[:200] if error else 'Connection error'
+                    }
+                )
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка при добавлении в очередь: {e}")
+        # На всякий случай пишем в файл
         with open('failed_months.csv', 'a', encoding='utf-8') as f:
             f.write(f"{city_id},{year},{month},{error}\n")
+
+def save_load_log(city_id, region_id, district_id, year, month, records_loaded, status, engine, error_message=None):
+    """Сохранить запись в лог загрузки"""
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO dtp_load_log 
+                    (city_id, gibdd_region_id, gibdd_district_id, year, month, records_loaded, load_status, error_message, started_at, completed_at)
+                    VALUES 
+                    (:city_id, :region_id, :district_id, :year, :month, :records_loaded, :status, :error_message, NOW(), NOW())
+                """),
+                {
+                    "city_id": city_id,
+                    "region_id": region_id,
+                    "district_id": district_id,
+                    "year": year,
+                    "month": month,
+                    "records_loaded": records_loaded,
+                    "status": status,
+                    "error_message": error_message
+                }
+            )
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении лога: {e}")
 
 def fetch_page(region_id, district_id, year, month, start):
     date_str = f"MONTHS:{month}.{year}"
@@ -281,31 +368,50 @@ def parse_card(card, city_id):
     
     return main, road, vehicles, participants
 
-def save_batch(table, data):
+def save_batch(table, data, engine):
+    """Сохраняет пачку данных через прямой SQL"""
     if not data:
         return
-    for i in range(0, len(data), BATCH_SIZE):
-        batch = data[i:i+BATCH_SIZE]
-        for attempt in range(3):
-            try:
-                requests.post(
-                    f"{db.url}/rest/v1/{table}",
-                    headers={**db.headers, 'Prefer': 'resolution=merge-duplicates'},
-                    json=batch,
-                    timeout=30
-                )
-                break
-            except:
-                if attempt < 2:
-                    time.sleep(3)
+    
+    table_map = {
+        'dtp_main': """
+            INSERT INTO dtp_main 
+            (kart_id, city_id, row_num, date, time, district, dtp_type, fatalities, injured, 
+             vehicles_count, participants_count, emtp_number, raw_data)
+            VALUES 
+            (:kart_id, :city_id, :row_num, :date, :time, :district, :dtp_type, :fatalities, :injured,
+             :vehicles_count, :participants_count, :emtp_number, :raw_data)
+            ON CONFLICT (kart_id) DO NOTHING
+        """,
+        'dtp_road_conditions': """
+            INSERT INTO dtp_road_conditions 
+            (kart_id, settlement, street, house, road, kilometer, meter, road_category,
+             road_code, road_value, road_surface, light_conditions, traffic_change, accident_code,
+             latitude, longitude, road_deficiencies, traffic_scheme, factors, weather_conditions, traffic_objects)
+            VALUES 
+            (:kart_id, :settlement, :street, :house, :road, :kilometer, :meter, :road_category,
+             :road_code, :road_value, :road_surface, :light_conditions, :traffic_change, :accident_code,
+             :latitude, :longitude, :road_deficiencies, :traffic_scheme, :factors, :weather_conditions, :traffic_objects)
+            ON CONFLICT (kart_id) DO NOTHING
+        """
+    }
+    
+    if table not in table_map:
+        logger.error(f"Неизвестная таблица: {table}")
+        return
+    
+    try:
+        with engine.connect() as conn:
+            for record in data:
+                conn.execute(text(table_map[table]), record)
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка при сохранении в {table}: {e}")
 
-def save_month(cards, city_id, region_id, district_id, year, month):
+def save_month(cards, city_id, region_id, district_id, year, month, engine):
+    """Сохранить данные за месяц"""
     if not cards:
-        log_entry = {
-            'city_id': str(city_id), 'gibdd_region_id': region_id, 'gibdd_district_id': district_id,
-            'year': year, 'month': month, 'records_loaded': 0, 'load_status': 'success'
-        }
-        requests.post(f"{db.url}/rest/v1/dtp_load_log", headers=db.headers, json=log_entry)
+        save_load_log(city_id, region_id, district_id, year, month, 0, 'success', engine)
         return 0
     
     main_data, road_data, vehicles_data, participants_data = [], [], [], []
@@ -317,57 +423,77 @@ def save_month(cards, city_id, region_id, district_id, year, month):
             vehicles_data.extend(vehicles)
             participants_data.extend(participants)
     
-    save_batch('dtp_main', main_data)
-    save_batch('dtp_road_conditions', road_data)
-    save_batch('dtp_vehicles', vehicles_data)
-    save_batch('dtp_participants', participants_data)
+    # Сохраняем данные
+    save_batch('dtp_main', main_data, engine)
+    save_batch('dtp_road_conditions', road_data, engine)
     
-    log_entry = {
-        'city_id': str(city_id), 'gibdd_region_id': region_id, 'gibdd_district_id': district_id,
-        'year': year, 'month': month, 'records_loaded': len(main_data), 'load_status': 'success'
-    }
-    requests.post(f"{db.url}/rest/v1/dtp_load_log", headers=db.headers, json=log_entry)
+    # TODO: добавить сохранение vehicles и participants при необходимости
+    
+    save_load_log(city_id, region_id, district_id, year, month, len(main_data), 'success', engine)
     
     logger.info(f"Загружено {len(main_data)} ДТП за {year}-{month:02d}")
     return len(main_data)
 
-def process_retry_queue():
-    response = requests.get(
-        f"{db.url}/rest/v1/dtp_retry_queue",
-        headers=db.headers,
-        params={"status": "eq.pending", "limit": 20}
-    )
-    if response.status_code != 200:
-        return
-    
-    for item in response.json():
-        city_resp = requests.get(
-            f"{db.url}/rest/v1/cities",
-            headers=db.headers,
-            params={"id": f"eq.{item['city_id']}", "select": "city_name,gibdd_region_id,gibdd_district_id"}
-        )
-        if city_resp.status_code != 200 or not city_resp.json():
-            continue
-        
-        city = city_resp.json()[0]
-        cards = fetch_with_retry(city['gibdd_region_id'], city['gibdd_district_id'], item['year'], item['month'])
-        
-        if cards is not None:
-            if cards:
-                cards = fetch_all_pages(city['gibdd_region_id'], city['gibdd_district_id'], item['year'], item['month'])
-                save_month(cards, item['city_id'], city['gibdd_region_id'], city['gibdd_district_id'], 
-                          item['year'], item['month'])
-            requests.delete(f"{db.url}/rest/v1/dtp_retry_queue?id=eq.{item['id']}", headers=db.headers)
-        time.sleep(2)
+def process_retry_queue(engine):
+    """Обработать очередь повторных попыток"""
+    try:
+        with engine.connect() as conn:
+            # Получаем элементы из очереди
+            result = conn.execute(
+                text("""
+                    SELECT id, city_id, year, month FROM dtp_retry_queue 
+                    WHERE status = 'pending' 
+                    LIMIT 20
+                """)
+            )
+            queue_items = result.fetchall()
+            
+            for item in queue_items:
+                # Получаем информацию о городе
+                city_result = conn.execute(
+                    text("""
+                        SELECT gibdd_region_id, gibdd_district_id FROM cities 
+                        WHERE id = :city_id
+                    """),
+                    {"city_id": item[1]}
+                )
+                city = city_result.first()
+                
+                if not city:
+                    continue
+                
+                cards = fetch_with_retry(city[0], city[1], item[2], item[3])
+                
+                if cards is not None:
+                    if cards:
+                        all_cards = fetch_all_pages(city[0], city[1], item[2], item[3])
+                        save_month(all_cards, item[1], city[0], city[1], item[2], item[3], engine)
+                    
+                    # Удаляем из очереди
+                    conn.execute(
+                        text("DELETE FROM dtp_retry_queue WHERE id = :id"),
+                        {"id": item[0]}
+                    )
+                    conn.commit()
+                
+                time.sleep(2)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке очереди: {e}")
 
 def update_all():
     logger.info("Запуск обновления ДТП")
     
-    process_retry_queue()
+    engine = get_db_connection()
+    if not engine:
+        logger.error("Не удалось подключиться к базе данных")
+        return
+    
+    # Обрабатываем очередь
+    process_retry_queue(engine)
     
     cities = get_active_cities()
     if not cities:
-        logger.error("Нет городов")
+        logger.error("Нет активных городов")
         return
     
     current_year, current_month = datetime.now().year, datetime.now().month
@@ -378,7 +504,7 @@ def update_all():
         
         logger.info(f"Обработка {city_name}")
         
-        last_year, last_month = get_last_loaded_month(city_id)
+        last_year, last_month = get_last_loaded_month(city_id, engine)
         
         if not last_year:
             start_year, start_month = 2015, 1
@@ -390,18 +516,18 @@ def update_all():
         
         year, month = start_year, start_month
         while year < current_year or (year == current_year and month <= current_month):
-            if month_loaded(city_id, year, month):
+            if month_loaded(city_id, year, month, engine):
                 logger.info(f"Месяц {year}-{month:02d} уже загружен")
             else:
                 logger.info(f"Загрузка {year}-{month:02d}")
                 cards = fetch_with_retry(region_id, district_id, year, month)
                 if cards is None:
-                    add_to_retry_queue(city_id, year, month, "Connection error")
+                    add_to_retry_queue(city_id, year, month, "Connection error", engine)
                 elif cards:
                     all_cards = fetch_all_pages(region_id, district_id, year, month)
-                    save_month(all_cards, city_id, region_id, district_id, year, month)
+                    save_month(all_cards, city_id, region_id, district_id, year, month, engine)
                 else:
-                    save_month([], city_id, region_id, district_id, year, month)
+                    save_month([], city_id, region_id, district_id, year, month, engine)
             
             month += 1
             if month > 12:
@@ -410,7 +536,7 @@ def update_all():
     
     logger.info("Финальная обработка очереди...")
     for _ in range(3):
-        process_retry_queue()
+        process_retry_queue(engine)
         time.sleep(5)
     
     logger.info("Загрузка завершена")
