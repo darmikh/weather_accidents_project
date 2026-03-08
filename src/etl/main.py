@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import time
+from database import db
 
 src_path = Path(__file__).parent.parent
 sys.path.append(str(src_path))
