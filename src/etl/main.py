@@ -40,14 +40,21 @@ def main():
     total_start = time.time()
     
     try:
-        # 1. Парсинг городов с Википедии
-        run_etl_step("Парсинг городов с Википедии", lambda: CitiesParser().run())
+        # Проверяем, доступен ли REST API
+        rest_available = db.headers is not None
         
-        # 2. Обработка сырых данных городов (координаты)
-        run_etl_step("Обработка координат городов", lambda: CitiesProcessor().process_raw_cities())
-        
-        # 3. Получение кодов ОКАТО/ГИБДД для городов - будем запускать, если будут появлятсья новые города 
-        #run_etl_step("Получение кодов ГИБДД", gibdd_main)
+        # эти шаги должны выполняться ТОЛЬКО если есть REST API
+        if rest_available:
+            # 1. Парсинг городов с Википедии
+            run_etl_step("Парсинг городов с Википедии", lambda: CitiesParser().run())
+            
+            # 2. Обработка сырых данных городов (координаты)
+            run_etl_step("Обработка координат городов", lambda: CitiesProcessor().process_raw_cities())
+            
+            # 3. Получение кодов ГИБДД (только если есть REST API)
+            # run_etl_step("Получение кодов ГИБДД", gibdd_main)
+        else:
+            logger.info("REST API не доступен, пропускаем шаги с городами")
         
         # 4. Загрузка погодных данных
         run_etl_step("Загрузка погодных данных", load_full_weather)
