@@ -1,6 +1,6 @@
 """
 Скрипт для автоматической загрузки данных о ДТП (полная версия)
-Загружает все поля во все таблицы
+Загружает все поля во все таблицы: dtp_main, dtp_road_conditions, dtp_vehicles, dtp_participants
 """
 import sys
 from pathlib import Path
@@ -32,6 +32,9 @@ HEADERS = {
 MAX_RETRIES = 3
 PAGE_SIZE = 1000
 BATCH_SIZE = 50
+
+# Количество последних месяцев для полного обновления 
+MONTHS_TO_REFRESH = 6
 
 def get_db_connection():
     """Создает подключение к базе данных через SQLAlchemy"""
@@ -119,7 +122,6 @@ def month_loaded(city_id, year, month, engine):
 def add_to_retry_queue(city_id, year, month, error, engine):
     """Добавить месяц в очередь повторной обработки"""
     try:
-        # Проверяем, есть ли уже в очереди
         with engine.connect() as conn:
             check = conn.execute(
                 text("""
@@ -133,7 +135,6 @@ def add_to_retry_queue(city_id, year, month, error, engine):
             )
             
             if not check.first():
-                # Добавляем в очередь
                 conn.execute(
                     text("""
                         INSERT INTO dtp_retry_queue 
@@ -151,7 +152,6 @@ def add_to_retry_queue(city_id, year, month, error, engine):
                 conn.commit()
     except Exception as e:
         logger.error(f"Ошибка при добавлении в очередь: {e}")
-        # На всякий случай пишем в файл
         with open('failed_months.csv', 'a', encoding='utf-8') as f:
             f.write(f"{city_id},{year},{month},{error}\n")
 
@@ -312,7 +312,7 @@ def parse_card(card, city_id):
     
     # 3. Транспортные средства 
     for ts in info.get('ts_info', []):
-        vehicles.append({
+        vehicle = {
             'kart_id': kart_id,
             'vehicle_number_in_accident': ts.get('n_ts'),
             'vehicle_status': ts.get('ts_s'),
@@ -326,11 +326,12 @@ def parse_card(card, city_id):
             'technical_condition': ts.get('t_n'),
             'ownership_form': ts.get('f_sob'),
             'owner_type': ts.get('o_pf')
-        })
+        }
+        vehicles.append(vehicle)
         
         # Участники внутри ТС 
         for uch in ts.get('ts_uch', []):
-            participants.append({
+            participant = {
                 'kart_id': kart_id,
                 'participant_number': uch.get('N_UCH'),
                 'role': uch.get('K_UCH'),
@@ -345,11 +346,12 @@ def parse_card(card, city_id):
                 'seat_group': uch.get('S_SEAT_GROUP'),
                 'injured_card_id': uch.get('INJURED_CARD_ID'),
                 'is_from_uch_info': False
-            })
+            }
+            participants.append(participant)
     
     # 4. Дополнительные участники 
     for uch in info.get('uchInfo', []):
-        participants.append({
+        participant = {
             'kart_id': kart_id,
             'participant_number': uch.get('N_UCH'),
             'role': uch.get('K_UCH'),
@@ -364,7 +366,8 @@ def parse_card(card, city_id):
             'seat_group': None,
             'injured_card_id': None,
             'is_from_uch_info': True
-        })
+        }
+        participants.append(participant)
     
     return main, road, vehicles, participants
 
@@ -381,7 +384,11 @@ def save_batch(table, data, engine):
             VALUES 
             (:kart_id, :city_id, :row_num, :date, :time, :district, :dtp_type, :fatalities, :injured,
              :vehicles_count, :participants_count, :emtp_number, :raw_data)
-            ON CONFLICT (kart_id) DO NOTHING
+            ON CONFLICT (kart_id) DO UPDATE SET
+                fatalities = EXCLUDED.fatalities,
+                injured = EXCLUDED.injured,
+                raw_data = EXCLUDED.raw_data,
+                updated_at = NOW()
         """,
         'dtp_road_conditions': """
             INSERT INTO dtp_road_conditions 
@@ -392,7 +399,32 @@ def save_batch(table, data, engine):
             (:kart_id, :settlement, :street, :house, :road, :kilometer, :meter, :road_category,
              :road_code, :road_value, :road_surface, :light_conditions, :traffic_change, :accident_code,
              :latitude, :longitude, :road_deficiencies, :traffic_scheme, :factors, :weather_conditions, :traffic_objects)
-            ON CONFLICT (kart_id) DO NOTHING
+            ON CONFLICT (kart_id) DO UPDATE SET
+                road_surface = EXCLUDED.road_surface,
+                light_conditions = EXCLUDED.light_conditions,
+                road_deficiencies = EXCLUDED.road_deficiencies,
+                weather_conditions = EXCLUDED.weather_conditions,
+                updated_at = NOW()
+        """,
+        'dtp_vehicles': """
+            INSERT INTO dtp_vehicles 
+            (kart_id, vehicle_number_in_accident, vehicle_status, vehicle_type, make, model, color,
+             steering, year, engine_capacity, technical_condition, ownership_form, owner_type)
+            VALUES 
+            (:kart_id, :vehicle_number_in_accident, :vehicle_status, :vehicle_type, :make, :model, :color,
+             :steering, :year, :engine_capacity, :technical_condition, :ownership_form, :owner_type)
+            ON CONFLICT (id) DO NOTHING
+        """,
+        'dtp_participants': """
+            INSERT INTO dtp_participants 
+            (kart_id, participant_number, role, injury_severity, gender, driving_experience, alcohol,
+             seatbelt_used, hid_from_scene, violations, additional_violations, seat_group, 
+             injured_card_id, is_from_uch_info)
+            VALUES 
+            (:kart_id, :participant_number, :role, :injury_severity, :gender, :driving_experience, :alcohol,
+             :seatbelt_used, :hid_from_scene, :violations, :additional_violations, :seat_group,
+             :injured_card_id, :is_from_uch_info)
+            ON CONFLICT (id) DO NOTHING
         """
     }
     
@@ -405,15 +437,33 @@ def save_batch(table, data, engine):
             for record in data:
                 conn.execute(text(table_map[table]), record)
             conn.commit()
+            logger.debug(f"Сохранено {len(data)} записей в {table}")
     except Exception as e:
         logger.error(f"Ошибка при сохранении в {table}: {e}")
 
 def save_month(cards, city_id, region_id, district_id, year, month, engine):
     """Сохранить данные за месяц"""
+    
+    today = datetime.now()
+    
+    # Определяем, закончился ли этот месяц
+    month_ended = False
+    if year < today.year:
+        month_ended = True
+    elif year == today.year and month < today.month:
+        month_ended = True
+    
     if not cards:
-        save_load_log(city_id, region_id, district_id, year, month, 0, 'success', engine)
+        # Если месяц еще не закончился и нет данных - не пишем success
+        if month_ended:
+            logger.info(f"Месяц {year}-{month:02d} закончился, данных нет")
+            save_load_log(city_id, region_id, district_id, year, month, 0, 'success', engine)
+        else:
+            logger.info(f"Месяц {year}-{month:02d} еще не закончился, данных пока нет - пропускаем логирование")
+            # Не пишем в лог, чтобы позже попробовать снова
         return 0
     
+    # Если данные есть - загружаем как обычно
     main_data, road_data, vehicles_data, participants_data = [], [], [], []
     for card in cards:
         main, road, vehicles, participants = parse_card(card, city_id)
@@ -423,22 +473,24 @@ def save_month(cards, city_id, region_id, district_id, year, month, engine):
             vehicles_data.extend(vehicles)
             participants_data.extend(participants)
     
-    # Сохраняем данные
     save_batch('dtp_main', main_data, engine)
     save_batch('dtp_road_conditions', road_data, engine)
     
-    # TODO: добавить сохранение vehicles и participants при необходимости
+    if vehicles_data:
+        save_batch('dtp_vehicles', vehicles_data, engine)
+    
+    if participants_data:
+        save_batch('dtp_participants', participants_data, engine)
     
     save_load_log(city_id, region_id, district_id, year, month, len(main_data), 'success', engine)
     
-    logger.info(f"Загружено {len(main_data)} ДТП за {year}-{month:02d}")
+    logger.info(f"Загружено {len(main_data)} ДТП, {len(vehicles_data)} ТС, {len(participants_data)} участников за {year}-{month:02d}")
     return len(main_data)
 
 def process_retry_queue(engine):
     """Обработать очередь повторных попыток"""
     try:
         with engine.connect() as conn:
-            # Получаем элементы из очереди
             result = conn.execute(
                 text("""
                     SELECT id, city_id, year, month FROM dtp_retry_queue 
@@ -449,7 +501,6 @@ def process_retry_queue(engine):
             queue_items = result.fetchall()
             
             for item in queue_items:
-                # Получаем информацию о городе
                 city_result = conn.execute(
                     text("""
                         SELECT gibdd_region_id, gibdd_district_id FROM cities 
@@ -498,12 +549,22 @@ def update_all():
     
     current_year, current_month = datetime.now().year, datetime.now().month
     
+    # Вычисляем границу для полного обновления (последние 6 месяцев)
+    refresh_year = current_year
+    refresh_month = current_month - MONTHS_TO_REFRESH + 1
+    while refresh_month <= 0:
+        refresh_month += 12
+        refresh_year -= 1
+    
+    logger.info(f"Будут полностью перепроверены (обновлены) месяцы начиная с {refresh_year}-{refresh_month:02d}")
+    
     for city in cities:
         city_id, city_name = city['id'], city['city_name']
         region_id, district_id = city['gibdd_region_id'], city['gibdd_district_id']
         
         logger.info(f"Обработка {city_name}")
         
+        # Определяем стартовую точку (первый месяц, который еще не загружен)
         last_year, last_month = get_last_loaded_month(city_id, engine)
         
         if not last_year:
@@ -514,12 +575,23 @@ def update_all():
             if start_month > 12:
                 start_month, start_year = 1, start_year + 1
         
+        # Проходим по всем месяцам от стартового до текущего
         year, month = start_year, start_month
         while year < current_year or (year == current_year and month <= current_month):
-            if month_loaded(city_id, year, month, engine):
-                logger.info(f"Месяц {year}-{month:02d} уже загружен")
-            else:
-                logger.info(f"Загрузка {year}-{month:02d}")
+            
+            # Проверяем, нужно ли полностью перепроверить этот месяц (последние 6 месяцев)
+            is_recent = (year > refresh_year) or (year == refresh_year and month >= refresh_month)
+            
+            # Определяем, закончился ли этот месяц
+            month_ended = False
+            if year < current_year:
+                month_ended = True
+            elif year == current_year and month < current_month:
+                month_ended = True
+            
+            if is_recent:
+                # Для последних 6 месяцев - всегда загружаем (перепроверяем)
+                logger.info(f"Перепроверка {year}-{month:02d} (последние {MONTHS_TO_REFRESH} месяцев)")
                 cards = fetch_with_retry(region_id, district_id, year, month)
                 if cards is None:
                     add_to_retry_queue(city_id, year, month, "Connection error", engine)
@@ -528,6 +600,20 @@ def update_all():
                     save_month(all_cards, city_id, region_id, district_id, year, month, engine)
                 else:
                     save_month([], city_id, region_id, district_id, year, month, engine)
+            else:
+                # Для старых месяцев - только если еще не загружены
+                if month_loaded(city_id, year, month, engine):
+                    logger.info(f"Месяц {year}-{month:02d} уже загружен (пропускаем)")
+                else:
+                    logger.info(f"Загрузка {year}-{month:02d}")
+                    cards = fetch_with_retry(region_id, district_id, year, month)
+                    if cards is None:
+                        add_to_retry_queue(city_id, year, month, "Connection error", engine)
+                    elif cards:
+                        all_cards = fetch_all_pages(region_id, district_id, year, month)
+                        save_month(all_cards, city_id, region_id, district_id, year, month, engine)
+                    else:
+                        save_month([], city_id, region_id, district_id, year, month, engine)
             
             month += 1
             if month > 12:
