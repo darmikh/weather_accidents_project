@@ -1,19 +1,16 @@
-import os
 import requests
 from dotenv import load_dotenv
 from logger_config import get_logger
+from config import config
 
-load_dotenv()
+url = config.SUPABASE_URL
+key = config.SUPABASE_KEY
+YANDEX_APIKEY = config.YANDEX_APIKEY
 
-url = os.getenv('SUPABASE_URL')
-key = os.getenv('SUPABASE_KEY')
-yandex_apikey = os.getenv('YANDEX_APIKEY')
-
-# Получаем параметры для прямого подключения к БД
-db_user = os.getenv('SUPABASE_DB_USER')
-db_password = os.getenv('SUPABASE_DB_PASSWORD')
-db_host = os.getenv('SUPABASE_DB_HOST')
-db_name = os.getenv('SUPABASE_DB_NAME')
+db_user = config.SUPABASE_DB_USER
+db_password = config.SUPABASE_DB_PASSWORD
+db_host = config.SUPABASE_DB_HOST
+db_name = config.SUPABASE_DB_NAME
 
 logger = get_logger('database')
 

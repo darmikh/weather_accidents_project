@@ -2,20 +2,18 @@ import requests
 import pandas as pd
 import time
 import re
-import os
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 from typing import Optional, Tuple
-from dotenv import load_dotenv
+from config import config
 
 from database import db
 from etl.logger_config import get_logger
 
 logger = get_logger('cities_etl')
 
-load_dotenv()
-YANDEX_APIKEY = os.getenv('YANDEX_APIKEY')
-DADATA_API_KEY = os.getenv('DADATA_API_KEY')
+YANDEX_APIKEY = config.YANDEX_APIKEY
+DADATA_API_KEY = config.DADATA_API_KEY
 
 # Пробуем импортировать dadata
 try:

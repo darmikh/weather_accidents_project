@@ -12,13 +12,11 @@ import requests
 import time
 from sqlalchemy import create_engine, text
 import os
-from dotenv import load_dotenv
 from database import db
 from etl.logger_config import get_logger
+from config import config
 
 logger = get_logger('weather_etl')
-
-load_dotenv()
 
 BASE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
@@ -209,7 +207,7 @@ def load_full_weather():
     for city_idx, city in enumerate(cities):
         logger.info(f"[{city_idx+1}/{len(cities)}] Обработка города: {city['city_name']}")
         
-        for year in range(2014, 2026):  # 2014-2025
+        for year in range(config.START_YEAR, config.END_YEAR + 1):
             for month in range(1, 13):  # 12 месяцев
                 # Формируем даты месяца
                 start = f"{year}-{month:02d}-01"

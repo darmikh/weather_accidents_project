@@ -1,9 +1,9 @@
 import os
 from sqlalchemy import create_engine, text
-from dotenv import load_dotenv
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from logger_config import get_logger
+from config import config
 
 logger = get_logger('refresh_datamart')
 
@@ -15,12 +15,11 @@ def refresh_materialized_view(view_name: str, concurrently: bool = True):
         view_name: Имя материализованного представления
         concurrently: Использовать CONCURRENTLY (позволяет читать данные во время обновления)
     """
-    load_dotenv()
     
-    user = os.getenv('SUPABASE_DB_USER')
-    password = os.getenv('SUPABASE_DB_PASSWORD')
-    host = os.getenv('SUPABASE_DB_HOST')
-    db_name = os.getenv('SUPABASE_DB_NAME')
+    user = config.SUPABASE_DB_USER
+    password = config.SUPABASE_DB_PASSWORD
+    host = config.SUPABASE_DB_HOST
+    db_name = config.SUPABASE_DB_NAME
     
     if not all([user, password, host, db_name]):
         logger.error("Не найдены переменные окружения для подключения к БД")

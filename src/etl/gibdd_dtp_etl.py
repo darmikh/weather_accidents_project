@@ -10,7 +10,7 @@ from datetime import datetime
 import json
 import os
 from sqlalchemy import create_engine, text
-from dotenv import load_dotenv
+from config import config
 
 src_path = Path(__file__).parent.parent
 sys.path.append(str(src_path))
@@ -19,8 +19,6 @@ from database import db
 from etl.logger_config import get_logger
 
 logger = get_logger('gibdd_dtp_full')
-
-load_dotenv()
 
 API_URL = "http://stat.gibdd.ru/map/getDTPCardData"
 HEADERS = {
@@ -33,8 +31,6 @@ MAX_RETRIES = 3
 PAGE_SIZE = 1000
 BATCH_SIZE = 50
 
-# Количество последних месяцев для полного обновления 
-MONTHS_TO_REFRESH = 6
 
 def get_db_connection():
     """Создает подключение к базе данных через SQLAlchemy"""
@@ -551,7 +547,7 @@ def update_all():
     
     # Вычисляем границу для полного обновления (последние 6 месяцев)
     refresh_year = current_year
-    refresh_month = current_month - MONTHS_TO_REFRESH + 1
+    refresh_month = current_month - config.MONTHS_TO_REFRESH + 1
     while refresh_month <= 0:
         refresh_month += 12
         refresh_year -= 1
