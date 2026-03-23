@@ -19,6 +19,7 @@
 - `refresh_datamart.py` - обновление витрины
 - `database.py` - работа с Supabase API
 - `logger_config.py` - настройка логирования
+- `config.py` - конфигурация проекта
 
 ### 3. Хранилище (Supabase PostgreSQL)
 **Основные таблицы:**
