@@ -543,7 +543,8 @@ def update_all():
         logger.error("Нет активных городов")
         return
     
-    current_year, current_month = datetime.now().year, datetime.now().month
+    current_year = config.END_YEAR   
+    current_month = 12               
     
     # Вычисляем границу для полного обновления (последние 6 месяцев)
     refresh_year = current_year
