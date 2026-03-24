@@ -52,12 +52,11 @@ def update_last_refresh_date():
     Записывает текущую дату и время в таблицу refresh_log.
     Создает таблицу, если она не существует.
     """
-    load_dotenv()
         
-    user = os.getenv('SUPABASE_DB_USER')
-    password = os.getenv('SUPABASE_DB_PASSWORD')
-    host = os.getenv('SUPABASE_DB_HOST')
-    db_name = os.getenv('SUPABASE_DB_NAME')
+    user = config.SUPABASE_DB_USER
+    password = config.SUPABASE_DB_PASSWORD
+    host = config.SUPABASE_DB_HOST
+    db_name = config.SUPABASE_DB_NAME
         
     database_url = f'postgresql+psycopg2://{user}:{password}@{host}:5432/{db_name}'
     
