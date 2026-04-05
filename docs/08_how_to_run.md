@@ -60,6 +60,9 @@ SUPABASE_DB_NAME=postgres
 # API ключи (рекомендуется для обработки сложных случаев)
 YANDEX_APIKEY=your-yandex-api-key
 DADATA_API_KEY=your-dadata-api-key
+
+# User-Agent для парсинга Wikipedia (обязательно)
+USER_AGENT_EMAIL=your-email@example.com
 ```
 
 Дополнительные настройки (годы загрузки, количество месяцев для перепроверки) находятся в `src/etl/config.py`:

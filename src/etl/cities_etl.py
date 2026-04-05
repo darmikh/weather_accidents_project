@@ -5,10 +5,12 @@ import re
 from geopy.geocoders import Nominatim
 from geopy.extra.rate_limiter import RateLimiter
 from typing import Optional, Tuple
-from config import config
+from bs4 import BeautifulSoup
 
 from database import db
-from etl.logger_config import get_logger
+from logger_config import get_logger
+from config import config 
+from utils.text_utils import normalize_city_name
 
 logger = get_logger('cities_etl')
 
@@ -92,7 +94,7 @@ class CitiesParser:
         }
         
         headers = {
-            'User-Agent': 'dasha.da.123.25@gmail.com'
+            'User-Agent': config.USER_AGENT_EMAIL
         }
         
         try:
@@ -117,7 +119,6 @@ class CitiesParser:
             except:
                 pass
             
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(html_content, 'html.parser')
             
             target_table = None
@@ -188,7 +189,7 @@ class CitiesParser:
                     break
         
         if 'Город' in df.columns:
-            df['Город'] = df['Город'].apply(self.clean_city_name)
+            df['Город'] = df['Город'].apply(normalize_city_name)
         
         if 'Население' in df.columns:
             df['Население'] = pd.to_numeric(
@@ -197,17 +198,6 @@ class CitiesParser:
             )
         
         return df
-    
-    def clean_city_name(self, city_name):
-        if not isinstance(city_name, str):
-            city_name = str(city_name)
-        
-        city_name = re.sub(r'\[.*?\]', '', city_name)
-        city_name = re.sub(r'не призн\.', '', city_name)
-        city_name = city_name.strip()
-        
-        return city_name
-
 
 class CitiesProcessor:
     

@@ -9,6 +9,8 @@ class Config:
     YANDEX_APIKEY = os.getenv('YANDEX_APIKEY')
     DADATA_API_KEY = os.getenv('DADATA_API_KEY')
     
+    USER_AGENT_EMAIL = os.getenv('USER_AGENT_EMAIL')
+    
     SUPABASE_DB_USER = os.getenv('SUPABASE_DB_USER')
     SUPABASE_DB_PASSWORD = os.getenv('SUPABASE_DB_PASSWORD')
     SUPABASE_DB_HOST = os.getenv('SUPABASE_DB_HOST')

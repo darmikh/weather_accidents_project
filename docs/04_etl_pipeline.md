@@ -12,6 +12,8 @@ src/etl/
 - `database.py` - работа с Supabase API
 - `logger_config.py` - настройка логирования
 - `config.py` - централизованная конфигурация проекта (годы загрузки, настройки API)
+- `utils/` - вспомогательные модули
+  - `utils/text_utils.py` - нормализация строк
 
 ## Порядок выполнения
 1. Парсинг городов с Wikipedia - `raw_cities`

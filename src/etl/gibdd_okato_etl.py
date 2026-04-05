@@ -16,6 +16,7 @@ sys.path.append(str(src_path))
 
 from database import db
 from etl.logger_config import get_logger
+from utils.text_utils import normalize_city_name
 
 logger = get_logger('gibdd_full_update')
 
@@ -344,18 +345,6 @@ def download_fresh_gibdd_data():
         logger.error(f"Критическая ошибка: {e}")
         return None
 
-def normalize_city_name(name):
-    """Нормализует название города для поиска"""
-    if not name:
-        return ""
-    name = str(name)
-    # Убираем префиксы
-    name = re.sub(r"^г\.?\s*", "", name)
-    name = re.sub(r"\s*город\s*", "", name)
-    name = re.sub(r"\s*\([^)]*\)", "", name)  # Убираем скобки с содержимым
-    name = re.sub(r"[^\w\s-]", "", name)  # Оставляем буквы, цифры, пробелы и дефисы
-    return name.strip()
-
 def find_region_id(region_name):
     """
     Находит ID региона по названию с учетом маппинга
@@ -437,7 +426,7 @@ def get_all_cities(max_retries=3):
                         "offset": offset,
                         "order": "city_name.asc"
                     },
-                    timeout=60  # Увеличим таймаут до 60 секунд
+                    timeout=60  
                 )
                 
                 if response.status_code == 200:
