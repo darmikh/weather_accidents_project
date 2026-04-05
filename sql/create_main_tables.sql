@@ -1,10 +1,10 @@
--- 1. УДАЛИТЬ старые таблицы (если они есть)
+-- 1. Удалить старые таблицы (если они есть)
 DROP TABLE IF EXISTS cities CASCADE;
 DROP TABLE IF EXISTS raw_cities CASCADE;
 
--- 2. СОЗДАТЬ упрощенные таблицы:
+-- 2. Создать упрощенные таблицы:
 
--- Сырые данные (только самое необходимое)
+-- Сырые данные (только необходимое)
 CREATE TABLE IF NOT EXISTS raw_cities (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     row_number INTEGER,
@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS raw_cities (
     original_population TEXT,  -- сохраняем как текст для аудита
     parsed_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'processed', 'error')),
-    error_message TEXT,  -- полезно для отладки ошибок обработки
+    error_message TEXT,  -- для отладки ошибок обработки
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
 );
 
@@ -25,43 +25,43 @@ CREATE TABLE IF NOT EXISTS cities (
     region TEXT NOT NULL,
     federal_district TEXT,
     population INTEGER,  -- числовое значение для фильтрации/сортировки
-    okato_code TEXT,    -- ОКАТО для API ГИБДД
+    okato_code TEXT,    -- ОКАТО (не подходит для запросов к API ГИБДД)
     latitude FLOAT NOT NULL,
     longitude FLOAT NOT NULL,
     is_active BOOLEAN DEFAULT FALSE,
-    raw_city_id UUID REFERENCES raw_cities(id),
+    raw_city_id UUID,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
     UNIQUE(city_name, region)  -- предотвращаем дубли
 );
 
--- 3. Индексы для производительности
+-- 3. Индексы 
 CREATE INDEX IF NOT EXISTS idx_cities_active ON cities (is_active) WHERE is_active = TRUE;
 CREATE INDEX IF NOT EXISTS idx_cities_region ON cities (region);
 CREATE INDEX IF NOT EXISTS idx_cities_federal_district ON cities (federal_district);
 CREATE INDEX IF NOT EXISTS idx_cities_population ON cities (population DESC NULLS LAST);
 CREATE INDEX IF NOT EXISTS idx_raw_cities_status ON raw_cities (status);
 
--- 4. УДАЛИТЬ старые таблицы (если они есть)
+-- 4. Удалить старые таблицы (если они есть)
 DROP TABLE IF EXISTS weather_hourly CASCADE;
 DROP TABLE IF EXISTS raw_weather_data CASCADE;
 
--- 5. Таблица для сырых погодных данных (RAW)
+-- 5. Таблица для сырых погодных данных (raw)
 -- Таблица для хранения сырых данных из Open-Meteo API
 CREATE TABLE IF NOT EXISTS raw_weather_data (
     -- Идентификатор
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     
     -- Связь с городом
-    city_id UUID NOT NULL REFERENCES cities(id) ON DELETE CASCADE,
+    city_id UUID,
     
-    -- Координаты запроса (могут отличаться от города)
+    -- Координаты 
     latitude FLOAT NOT NULL,
     longitude FLOAT NOT NULL,
     
     -- Период запроса
-    start_date DATE NOT NULL,          -- начало периода (например, '2024-01-01')
-    end_date DATE NOT NULL,            -- конец периода (например, '2024-01-31')
+    start_date DATE NOT NULL,         
+    end_date DATE NOT NULL,            
     
     -- Информация о запросе
     request_url TEXT,                  -- полный URL запроса для отладки
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS raw_weather_data (
     error_message TEXT,                -- сообщение об ошибке, если была
     
     -- Сырые данные
-    hourly_data JSONB NOT NULL,        -- полный JSON ответ от API (бинарный формат)
+    hourly_data JSONB NOT NULL,        -- полный JSONB ответ от API 
     
     -- Метаданные
     source TEXT DEFAULT 'open-meteo',  -- источник данных
@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS weather_hourly (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     
     -- Связь с городом
-    city_id UUID NOT NULL REFERENCES cities(id) ON DELETE CASCADE,
+    city_id UUID NOT NULL,
     
     -- Время наблюдения (берется из hourly.time в ответе API)
     datetime TIMESTAMPTZ NOT NULL,     -- час наблюдения (например, '2024-01-01 14:00:00+03')
@@ -122,14 +122,14 @@ CREATE TABLE IF NOT EXISTS weather_hourly (
     wind_gusts_10m FLOAT,              -- порывы ветра на 10м (км/ч)
     
     -- Солнечная радиация
-    shortwave_radiation FLOAT,         -- коротковолновая радиация (W/m²)
-    direct_radiation FLOAT,            -- прямая радиация (W/m²)
-    diffuse_radiation FLOAT,           -- рассеянная радиация (W/m²)
-    direct_normal_irradiance FLOAT,    -- прямая нормальная irradiance (W/m²)
-    terrestrial_radiation FLOAT,       -- земная радиация (W/m²)
+    shortwave_radiation FLOAT,         -- коротковолновая радиация 
+    direct_radiation FLOAT,            -- прямая радиация 
+    diffuse_radiation FLOAT,           -- рассеянная радиация 
+    direct_normal_irradiance FLOAT,    -- прямая нормальная радиация 
+    terrestrial_radiation FLOAT,       -- земная радиация 
     
     -- Связь с сырыми данными
-    raw_weather_id UUID REFERENCES raw_weather_data(id) ON DELETE SET NULL,
+    raw_weather_id UUID,
     
     -- Метаданные
     created_at TIMESTAMPTZ DEFAULT TIMEZONE('utc', NOW()),
@@ -138,8 +138,8 @@ CREATE TABLE IF NOT EXISTS weather_hourly (
     UNIQUE(city_id, datetime)  -- одно значение погоды на город в час
 );
 
--- Индексы для производительности
--- Основной индекс для JOIN с данными ДТП (ОБЯЗАТЕЛЬНЫЙ)
+-- Индексы 
+-- Основной индекс для JOIN с данными ДТП (обязательный)
 CREATE INDEX IF NOT EXISTS idx_weather_city_datetime 
 ON weather_hourly (city_id, datetime DESC);
 
@@ -172,6 +172,6 @@ ALTER TABLE cities
 ADD COLUMN IF NOT EXISTS gibdd_region_id TEXT,
 ADD COLUMN IF NOT EXISTS gibdd_district_id TEXT;
 
--- Добавим комментарии к столбцам для пояснения
+-- Комментарии
 COMMENT ON COLUMN cities.gibdd_region_id IS 'ID региона в системе ГИБДД (первые 1-2 цифры)';
 COMMENT ON COLUMN cities.gibdd_district_id IS 'ID муниципалитета/города в системе ГИБДД (полный код)';

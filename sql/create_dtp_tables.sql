@@ -1,8 +1,8 @@
--- Таблица: dtp_main (Основная информация о ДТП)
+-- Таблица: dtp_main (основная информация о ДТП)
 CREATE TABLE IF NOT EXISTS public.dtp_main (
     id BIGSERIAL PRIMARY KEY,
     kart_id BIGINT UNIQUE NOT NULL,
-    city_id UUID REFERENCES public.cities(id) ON DELETE SET NULL,  
+    city_id UUID,  
     row_num INTEGER,
     date DATE,
     time TIME,
@@ -18,16 +18,16 @@ CREATE TABLE IF NOT EXISTS public.dtp_main (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Индексы для ускорения запросов
+-- Индексы 
 CREATE INDEX idx_dtp_main_kart_id ON public.dtp_main(kart_id);
 CREATE INDEX idx_dtp_main_city_id ON public.dtp_main(city_id);
 CREATE INDEX idx_dtp_main_date ON public.dtp_main(date);
 
 
--- Таблица: dtp_road_conditions (Дорожные условия и обстановка)
+-- Таблица: dtp_road_conditions (дорожные условия и обстановка)
 CREATE TABLE IF NOT EXISTS public.dtp_road_conditions (
     id BIGSERIAL PRIMARY KEY,
-    kart_id BIGINT UNIQUE NOT NULL REFERENCES public.dtp_main(kart_id) ON DELETE CASCADE,
+    kart_id BIGINT UNIQUE NOT NULL,
     settlement TEXT,
     street TEXT,
     house TEXT,
@@ -56,10 +56,10 @@ CREATE TABLE IF NOT EXISTS public.dtp_road_conditions (
 CREATE INDEX idx_dtp_road_conditions_kart_id ON public.dtp_road_conditions(kart_id);
 
 
--- Таблица: dtp_vehicles (Транспортные средства)
+-- Таблица: dtp_vehicles (транспортные средства)
 CREATE TABLE IF NOT EXISTS public.dtp_vehicles (
     id BIGSERIAL PRIMARY KEY,
-    kart_id BIGINT NOT NULL REFERENCES public.dtp_main(kart_id) ON DELETE CASCADE,
+    kart_id BIGINT NOT NULL,
     vehicle_number_in_accident TEXT,
     vehicle_status TEXT,
     vehicle_type TEXT,
@@ -81,11 +81,11 @@ CREATE INDEX idx_dtp_vehicles_kart_id ON public.dtp_vehicles(kart_id);
 CREATE INDEX idx_dtp_vehicles_vehicle_number ON public.dtp_vehicles(vehicle_number_in_accident);
 
 
--- Таблица: dtp_participants (Участники ДТП)
+-- Таблица: dtp_participants (участники ДТП)
 CREATE TABLE IF NOT EXISTS public.dtp_participants (
     id BIGSERIAL PRIMARY KEY,
-    kart_id BIGINT NOT NULL REFERENCES public.dtp_main(kart_id) ON DELETE CASCADE,
-    vehicle_id BIGINT REFERENCES public.dtp_vehicles(id) ON DELETE SET NULL,
+    kart_id BIGINT NOT NULL,
+    vehicle_id BIGINT,
     participant_number TEXT,
     role TEXT,
     injury_severity TEXT,
@@ -108,10 +108,10 @@ CREATE INDEX idx_dtp_participants_kart_id ON public.dtp_participants(kart_id);
 CREATE INDEX idx_dtp_participants_vehicle_id ON public.dtp_participants(vehicle_id);
 CREATE INDEX idx_dtp_participants_role ON public.dtp_participants(role);
 
--- Таблица: dtp_load_log (Логирование загрузок данных)
+-- Таблица: dtp_load_log (логирование загрузок данных)
 CREATE TABLE IF NOT EXISTS public.dtp_load_log (
     id BIGSERIAL PRIMARY KEY,
-    city_id UUID REFERENCES public.cities(id) ON DELETE SET NULL,  
+    city_id UUID,  
     gibdd_region_id TEXT,
     gibdd_district_id TEXT,
     year INTEGER,
@@ -127,40 +127,10 @@ CREATE TABLE IF NOT EXISTS public.dtp_load_log (
 CREATE INDEX idx_dtp_load_log_city_date ON public.dtp_load_log(city_id, year, month);
 
 
--- Функция для автоматического обновления updated_at
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Триггеры для автоматического обновления updated_at
-CREATE TRIGGER update_dtp_main_updated_at
-    BEFORE UPDATE ON public.dtp_main
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_dtp_road_conditions_updated_at
-    BEFORE UPDATE ON public.dtp_road_conditions
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_dtp_vehicles_updated_at
-    BEFORE UPDATE ON public.dtp_vehicles
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_dtp_participants_updated_at
-    BEFORE UPDATE ON public.dtp_participants
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-    -- Таблица для очереди повторной обработки проблемных месяцев
+-- Таблица для очереди повторной обработки проблемных месяцев
 CREATE TABLE IF NOT EXISTS public.dtp_retry_queue (
     id BIGSERIAL PRIMARY KEY,
-    city_id UUID REFERENCES public.cities(id) ON DELETE CASCADE,
+    city_id UUID,
     year INTEGER NOT NULL,
     month INTEGER NOT NULL,
     attempt_count INTEGER DEFAULT 0,
@@ -171,7 +141,7 @@ CREATE TABLE IF NOT EXISTS public.dtp_retry_queue (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Индексы для быстрого поиска
+-- Индексы
 CREATE INDEX idx_retry_queue_city ON public.dtp_retry_queue(city_id);
 CREATE INDEX idx_retry_queue_status ON public.dtp_retry_queue(status);
 CREATE INDEX idx_retry_queue_next_retry ON public.dtp_retry_queue(next_retry_time);
@@ -182,16 +152,3 @@ COMMENT ON COLUMN public.dtp_retry_queue.attempt_count IS 'Количество 
 COMMENT ON COLUMN public.dtp_retry_queue.last_error IS 'Последняя ошибка при попытке загрузки';
 COMMENT ON COLUMN public.dtp_retry_queue.status IS 'pending - ожидает, processing - в обработке, done - успешно, failed - провалено после 5 попыток';
 
--- Триггер для автоматического обновления updated_at
-CREATE OR REPLACE FUNCTION update_retry_queue_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER update_dtp_retry_queue_updated_at
-    BEFORE UPDATE ON public.dtp_retry_queue
-    FOR EACH ROW
-    EXECUTE FUNCTION update_retry_queue_updated_at();
