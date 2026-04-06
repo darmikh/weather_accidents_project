@@ -26,110 +26,197 @@ except ImportError:
     logger.warning("Библиотека dadata-py не установлена. ОКАТО не будет получен")
 
 
-class CitiesParser:
+class CitiesLoader:
     
     def run(self):
-        logger.info("Запуск парсера городов")
+        logger.info("Загрузка данных из Википедии")
+        
         if not db.test_connection():
-            logger.error("Ошибка подключения к Supabase - прерывание работы")
+            logger.error("Ошибка подключения к Supabase")
+            return None
+        
+        try:
+            raw_html = self._fetch_wikipedia_html()
+            if not raw_html:
+                return None
+            
+            staging_id = db.insert_raw_cities_data({
+                'raw_html': raw_html,
+                'processed': False
+            })
+            
+            if staging_id:
+                logger.info(f"Сырые данные сохранены, ID: {staging_id}")
+            else:
+                logger.error("Не удалось сохранить данные")
+            
+            return staging_id
+            
+        except Exception as e:
+            logger.error(f"Ошибка при загрузке: {e}")
+            return None
+        
+    
+    def _fetch_wikipedia_html(self):
+        try:
+            response = requests.get(
+                'https://ru.wikipedia.org/w/api.php',
+                params={
+                    'action': 'parse',
+                    'page': 'Список_городов_России',
+                    'format': 'json',
+                    'prop': 'text',
+                    'contentmodel': 'wikitext'
+                },
+                headers={'User-Agent': config.USER_AGENT_EMAIL},
+                timeout=30
+            )
+            response.raise_for_status()
+            return response.json()['parse']['text']['*']
+        except Exception as e:
+            logger.error(f"Ошибка загрузки Википедии: {e}")
+            return None
+
+
+  
+class CitiesProcessor:
+    
+    def __init__(self):
+        self.geolocator = Nominatim(user_agent="weather_accidents_analysis")
+        self.geocode = RateLimiter(self.geolocator.geocode, min_delay_seconds=2)
+        self.coordinates_cache = {}
+        self.yandex_apikey = YANDEX_APIKEY  # <-- вот эта строка
+        
+        # DaData клиент (опционально)
+        self.dadata_client = None
+        if DADATA_AVAILABLE and DADATA_API_KEY:
+            try:
+                self.dadata_client = DadataClient(DADATA_API_KEY)
+                logger.info("DaData клиент инициализирован")
+            except Exception as e:
+                logger.warning(f"Ошибка инициализации DaData: {e}")
+        
+    def process(self, staging_id):
+        logger.info(f"Обработка данных ID: {staging_id}")
+        
+        # Получаем сырые данные
+        raw_data = db.get_raw_cities_data(staging_id)
+        if not raw_data:
+            logger.error(f"Данные не найдены: {staging_id}")
             return
         
-        logger.info("Начинаем парсинг Wikipedia...")
-        cities_df = self.parse_wikipedia()
-        
+        # Парсим таблицу
+        cities_df = self._parse_cities_table(raw_data['raw_html'])
         if cities_df.empty:
-            logger.error("Не удалось получить данные с Википедии")
+            logger.error("Не удалось распарсить города")
+            db.update_raw_cities_data_status(staging_id, True, "Parsing failed")
             return
         
         logger.info(f"Найдено городов: {len(cities_df)}")
         
+        # Обрабатываем каждый город
         success_count = 0
-        error_count = 0
-        
-        for idx, row in cities_df.iterrows():
-            city = row['Город']
-            region = row['Регион']
-            population = row['Население']
-            federal_district = row['Федеральный округ']
+        for _, row in cities_df.iterrows():
+            city_name = row.get('Город')
+            region = row.get('Регион', '')
+            population = self._parse_population(row.get('Население'))
             
-            try:
-                logger.debug(f"Обработка города {idx+1}/{len(cities_df)}: {city}")
-                raw_data = {
-                    'row_number': idx + 1,
-                    'original_city_name': str(city),
-                    'original_region': str(region),
-                    'original_federal_district': str(federal_district),
-                    'original_population': str(population) if pd.notna(population) else None,
-                    'status': 'pending',
-                    'error_message': None
-                }
-                
-                if not db.raw_city_exists(city, region):
-                    raw_id = db.insert_raw_city(raw_data)
-                    if raw_id:
-                        success_count += 1
-                    else:
-                        error_count += 1
-                else:
-                    logger.debug(f"Город {city} уже есть в raw_cities, пропускаем")
-                    success_count += 1  # считаем как успех, но не вставляем
-                
-                time.sleep(0.05)
-                
-            except Exception as e:
-                error_count += 1
-                logger.error(f"Исключение при обработке {city}: {e}")
+            if not city_name:
                 continue
+            
+            # Проверяем дубликаты (явные и неявные)
+            if self._is_duplicate_city(city_name, region, population):
+                logger.debug(f"Город {city_name} уже существует (или похож), пропускаем")
+                continue
+            
+            # Получаем координаты
+            coords = self._get_coordinates(city_name, region)
+            if not coords:
+                logger.warning(f"Координаты не найдены для {city_name}, пропускаем")
+                continue
+            
+            # Получаем OKATO (опционально)
+            okato = self._get_okato(city_name, region) if self.dadata_client else None
+            
+            # Сохраняем город
+            city_data = {
+                'city_name': city_name,
+                'region': region,
+                'federal_district': row.get('Федеральный округ'),
+                'population': self._parse_population(row.get('Население')),
+                'okato_code': okato,
+                'latitude': coords[0],
+                'longitude': coords[1],
+                'is_active': False
+            }
+            
+            if db.insert_city(city_data):
+                success_count += 1
+                logger.info(f"Добавлен город ({success_count}): {city_name}")
+            
+            time.sleep(0.2)  # Пауза между запросами
         
-        logger.info(f"Загрузка завершена. Успешно: {success_count}, Ошибок: {error_count}")
+        # Обновляем статус
+        db.update_raw_cities_data_status(staging_id, True)
+        logger.info(f"Обработка завершена. Добавлено городов: {success_count}")
         
+    def _is_duplicate_city(self, city_name, region, population):
+        if db.city_exists(city_name, region, fuzzy=False):
+            logger.debug(f"Точное совпадение: {city_name}")
+            return True
+        
+        return False
     
-    def parse_wikipedia(self):
-        params = {
-            'action': 'parse',
-            'page': 'Список_городов_России',
-            'format': 'json',
-            'prop': 'text',
-            'contentmodel': 'wikitext'
-        }
+    def clean_dataframe(self, df):
+        # Убеждаемся, что есть колонка с названием города
+        if 'Город' not in df.columns:
+            for col in df.columns:
+                if 'город' in str(col).lower():
+                    df = df.rename(columns={col: 'Город'})
+                    break
         
-        headers = {
-            'User-Agent': config.USER_AGENT_EMAIL
-        }
-        
-        try:
-            response = requests.get(
-                'https://ru.wikipedia.org/w/api.php',
-                params=params, 
-                headers=headers,
-                timeout=30
+        # Нормализуем названия городов
+        if 'Город' in df.columns:
+            df['Город'] = df['Город'].apply(normalize_city_name)
+            df = df[df['Город'].notna() & (df['Город'] != '')]
+            
+        # Преобразуем население в число
+        if 'Население' in df.columns:
+            df['Население'] = pd.to_numeric(
+                df['Население'].astype(str).str.replace(r'[^\d]', '', regex=True), 
+                errors='coerce'
             )
+        
+        return df
+    
+    def _parse_cities_table(self, raw_html):
+        try:
+            # Пробуем pandas read_html
+            tables = pd.read_html(raw_html)
+            if tables:
+                cities_df = tables[0]
+                logger.info(f"Таблица найдена через pandas, колонки: {list(cities_df.columns[:5])}")
+                return self.clean_dataframe(cities_df)
+        except Exception as e:
+            logger.debug(f"pandas read_html не сработал: {e}")
+        
+        # Если pandas не помог, парсим вручную через BeautifulSoup
+        try:
+            soup = BeautifulSoup(raw_html, 'html.parser')
             
-            if response.status_code != 200:
-                return pd.DataFrame()
-            
-            data = response.json()
-            html_content = data['parse']['text']['*']
-            
-            try:
-                tables = pd.read_html(html_content)
-                if tables:
-                    cities_df = tables[0]
-                    return self.clean_dataframe(cities_df)
-            except:
-                pass
-            
-            soup = BeautifulSoup(html_content, 'html.parser')
-            
+            # Ищем таблицу
             target_table = None
+            
             wikitable = soup.find('table', {'class': 'wikitable'})
             if wikitable:
                 target_table = wikitable
+                logger.info("Найдена таблица с классом 'wikitable'")
             
             if not target_table:
                 standard_table = soup.find('table', {'class': 'standard'})
                 if standard_table:
                     target_table = standard_table
+                    logger.info("Найдена таблица с классом 'standard'")
             
             if not target_table:
                 all_tables = soup.find_all('table')
@@ -137,20 +224,24 @@ class CitiesParser:
                     rows = table.find_all('tr')
                     if len(rows) > 1000:
                         target_table = table
+                        logger.info("Найдена большая таблица")
                         break
             
             if not target_table:
+                logger.error("Таблица с городами не найдена")
                 return pd.DataFrame()
             
+            # Парсим заголовки
             headers = []
             header_row = target_table.find('tr')
             if header_row:
                 for th in header_row.find_all(['th', 'td']):
                     headers.append(th.get_text(strip=True))
             
+            # Парсим данные
             data = []
             rows = target_table.find_all('tr')[1:]
-            
+        
             for row in rows:
                 row_data = []
                 cells = row.find_all(['td', 'th'])
@@ -176,105 +267,40 @@ class CitiesParser:
                 column_names = [f'col_{i}' for i in range(num_cols)]
             
             cities_df = pd.DataFrame(data, columns=column_names)
+            logger.info(f"Таблица найдена через BeautifulSoup, колонки: {column_names[:5]}")
             return self.clean_dataframe(cities_df)
-                    
-        except Exception:
+            
+        except Exception as e:
+            logger.error(f"Ошибка парсинга таблицы: {e}")
             return pd.DataFrame()
     
-    def clean_dataframe(self, df):
-        if 'Город' not in df.columns:
-            for col in df.columns:
-                if 'город' in str(col).lower():
-                    df = df.rename(columns={col: 'Город'})
-                    break
-        
-        if 'Город' in df.columns:
-            df['Город'] = df['Город'].apply(normalize_city_name)
-        
-        if 'Население' in df.columns:
-            df['Население'] = pd.to_numeric(
-                df['Население'].astype(str).str.replace(r'[^\d]', '', regex=True), 
-                errors='coerce'
-            )
-        
-        return df
-
-class CitiesProcessor:
-    
-    def __init__(self):
-        self.geolocator = Nominatim(user_agent="weather_accidents_analysis")
-        self.geocode = RateLimiter(self.geolocator.geocode, min_delay_seconds=2)
-        self.coordinates_cache = {}
-        self.yandex_apikey = YANDEX_APIKEY
-        
-        # Инициализируем DaData клиент
-        self.dadata_client = None
-        self.dadata_available = False
-        
-        if DADATA_AVAILABLE and DADATA_API_KEY:
-            try:
-                self.dadata_client = DadataClient(DADATA_API_KEY)
-                self.dadata_available = True
-                logger.info("DaData клиент инициализирован")
-            except Exception as e:
-                logger.info(f"Ошибка инициализации DaData: {e}")
-        else:
-            logger.info("DaData недоступен, ОКАТО не будет получен")
-    
-    def get_coordinates_yandex(self, address: str) -> Optional[Tuple[float, float]]:
-        """Получение координат через Яндекс API"""
-        if not self.yandex_apikey:
-            return None
-        
-        try:
-            base_url = "https://geocode-maps.yandex.ru/1.x"
-            response = requests.get(
-                base_url,
-                params={
-                    "geocode": address,
-                    "apikey": self.yandex_apikey,
-                    "format": "json",
-                },
-                timeout=10
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            found_places = data['response']['GeoObjectCollection']['featureMember']
-
-            if not found_places:
-                return None
-
-            most_relevant = found_places[0]
-            lon, lat = most_relevant['GeoObject']['Point']['pos'].split(" ")
-
-            return float(lat), float(lon)
-
-        except Exception as e:
-            logger.debug(f"Яндекс API ошибка: {type(e).__name__}")
-            return None
-    
-    def get_coordinates(self, city_name: str, region: str) -> Optional[Tuple[float, float]]:
-        """Основной метод получения координат"""
+    def _get_coordinates(self, city_name, region):
         cache_key = f"{city_name}_{region}"
-        
         if cache_key in self.coordinates_cache:
             return self.coordinates_cache[cache_key]
         
-        # Сначала пробуем Яндекс API
-        queries = [
-            f"{city_name}, {region}, Россия",
-            f"{city_name}, Россия",
-            city_name
-        ]
+        queries = [f"{city_name}, {region}, Россия", f"{city_name}, Россия", city_name]
         
-        for query in queries:
-            coords = self.get_coordinates_yandex(query)
-            if coords:
-                self.coordinates_cache[cache_key] = coords
-                return coords
+        # Сначала Яндекс
+        if self.yandex_apikey:
+            for query in queries:
+                try:
+                    response = requests.get(
+                        "https://geocode-maps.yandex.ru/1.x",
+                        params={"geocode": query, "apikey": self.yandex_apikey, "format": "json"},
+                        timeout=10
+                    )
+                    data = response.json()
+                    places = data['response']['GeoObjectCollection']['featureMember']
+                    if places:
+                        lon, lat = places[0]['GeoObject']['Point']['pos'].split()
+                        coords = (float(lat), float(lon))
+                        self.coordinates_cache[cache_key] = coords
+                        return coords
+                except:
+                    pass
         
-        # Если Яндекс не сработал, пробуем Nominatim
+        # Потом Nominatim
         for query in queries:
             try:
                 location = self.geocode(query, timeout=15)
@@ -282,116 +308,47 @@ class CitiesProcessor:
                     coords = (location.latitude, location.longitude)
                     self.coordinates_cache[cache_key] = coords
                     return coords
-            except Exception:
+            except:
                 continue
         
         return None
     
-    def get_okato_code(self, city_name: str, region: str) -> Optional[str]:
-        """Получить код ОКАТО для города через DaData"""
-        if not self.dadata_available or not self.dadata_client:
-            return None
-        
-        query = f"{city_name}, {region}, Россия"
-        
+    def _get_okato(self, city_name, region):
         try:
-            result = self.dadata_client.suggest("address", query, count=1)
-            
-            if result and len(result) > 0:
-                data = result[0].get('data', {})
-                okato = data.get('okato')
-                return okato
-            
-            return None
-            
+            result = self.dadata_client.suggest("address", f"{city_name}, {region}, Россия", count=1)
+            if result:
+                return result[0].get('data', {}).get('okato')
         except Exception as e:
-            logger.info(f"DaData API ошибка для {city_name}: {e}")
-            return None
+            logger.debug(f"DaData ошибка для {city_name}: {e}")
+        return None
     
-    def process_raw_cities(self):
-        logger.info("Обработка сырых данных городов")
-        
-        raw_cities = db.get_raw_cities_pending()
-        
-        if not raw_cities:
-            logger.info("Нет городов для обработки")
-            return
-        
-        logger.info(f"Городов для обработки: {len(raw_cities)}")
-        
-        success_count = 0
-        error_count = 0
-        dadata_requests = 0
-        
-        for i, raw_city in enumerate(raw_cities):
-            logger.info(f"Обработка {i+1}/{len(raw_cities)}: {raw_city['original_city_name']}")
-            
-            raw_city_id = raw_city['id']
-            city_name = raw_city['original_city_name']
-            region = raw_city['original_region']
-            federal_district = raw_city['original_federal_district']
-            population = raw_city['original_population']
-            
-            try:
-                if db.city_exists(city_name, region):
-                    db.update_raw_city_status(raw_city_id, 'processed')
-                    continue
-                
-                population_int = self.parse_population(population)
-                
-                coordinates = self.get_coordinates(city_name, region)
-                if not coordinates:
-                    db.update_raw_city_status(raw_city_id, 'error', 'Координаты не найдены')
-                    error_count += 1
-                    continue
-                
-                okato_code = None
-                if self.dadata_available:
-                    okato_code = self.get_okato_code(city_name, region)
-                    if okato_code:
-                        dadata_requests += 1
-                
-                city_data = {
-                    'city_name': city_name,
-                    'region': region,
-                    'federal_district': federal_district,
-                    'population': population_int,
-                    'okato_code': okato_code,
-                    'latitude': coordinates[0],
-                    'longitude': coordinates[1],
-                    'is_active': False,
-                    'raw_city_id': raw_city_id
-                }
-                
-                city_id = db.insert_city(city_data)
-                
-                if city_id:
-                    db.update_raw_city_status(raw_city_id, 'processed')
-                    success_count += 1
-                else:
-                    db.update_raw_city_status(raw_city_id, 'error', 'Не удалось добавить в cities')
-                    error_count += 1
-                
-                # Задержка для DaData API (10k запросов в день бесплатно)
-                time.sleep(0.2)
-                
-            except Exception as e:
-                logger.error(f"Исключение при обработке {city_name}: {e}")
-                db.update_raw_city_status(raw_city_id, 'error', str(e)[:200])
-                error_count += 1
-        
-        logger.info(f"Обработано успешно: {success_count}")
-        logger.info(f"Ошибок обработки: {error_count}")
-        
-        if self.dadata_available:
-            logger.info(f"Выполнено запросов к DaData: {dadata_requests}")
-    
-    def parse_population(self, population_str):
-        if not population_str:
+    def _parse_population(self, population):
+        if not population or pd.isna(population):
             return None
-        
         try:
-            cleaned = re.sub(r'[^\d]', '', str(population_str))
+            cleaned = re.sub(r'[^\d]', '', str(population))
             return int(cleaned) if cleaned else None
         except:
             return None
+
+
+def main():
+    logger.info("Запуск ETL процесса для городов России")
+    
+    # 1. Загружаем сырые данные
+    loader = CitiesLoader()
+    staging_id = loader.run()
+    
+    if not staging_id:
+        logger.error("Не удалось загрузить данные, обработка остановлена")
+        return
+    
+    # 2. Обрабатываем данные
+    processor = CitiesProcessor()
+    processor.process(staging_id)
+    
+    logger.info("ETL процесс завершен")
+
+
+if __name__ == "__main__":
+    main()

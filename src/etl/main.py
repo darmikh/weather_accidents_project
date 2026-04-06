@@ -7,7 +7,7 @@ src_path = Path(__file__).parent.parent
 sys.path.append(str(src_path))
 
 from logger_config import get_logger 
-from cities_etl import CitiesParser, CitiesProcessor
+from cities_etl import CitiesLoader, CitiesProcessor
 from gibdd_okato_etl import main as gibdd_main
 from weather_etl import load_full_weather
 from gibdd_dtp_etl import update_all as load_dtp_data
@@ -46,11 +46,14 @@ def main():
         
         # эти шаги должны выполняться ТОЛЬКО если есть REST API
         if rest_available:
-            # 1. Парсинг городов с Википедии
-            run_etl_step("Парсинг городов с Википедии", lambda: CitiesParser().run())
+            # 1. Загружаем сырые данные
+            loader = CitiesLoader()
+            staging_id = loader.run()
             
-            # 2. Обработка сырых данных городов (координаты)
-            run_etl_step("Обработка координат городов", lambda: CitiesProcessor().process_raw_cities())
+            if staging_id:
+                # 2. Обрабатываем города
+                processor = CitiesProcessor()
+                processor.process(staging_id)
             
             # 3. Получение кодов ГИБДД (только если есть REST API)
             # run_etl_step("Получение кодов ГИБДД", gibdd_main)
