@@ -1,21 +1,16 @@
 -- 1. Удалить старые таблицы (если они есть)
 DROP TABLE IF EXISTS cities CASCADE;
-DROP TABLE IF EXISTS raw_cities CASCADE;
+DROP TABLE IF EXISTS raw_cities_data CASCADE;
 
--- 2. Создать упрощенные таблицы:
+-- 2. Создать таблицы:
 
 -- Сырые данные (только необходимое)
-CREATE TABLE IF NOT EXISTS raw_cities (
+CREATE TABLE IF NOT EXISTS raw_cities_data (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    row_number INTEGER,
-    original_city_name TEXT NOT NULL,
-    original_region TEXT NOT NULL,
-    original_federal_district TEXT,
-    original_population TEXT,  -- сохраняем как текст для аудита
-    parsed_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW()),
-    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'processed', 'error')),
-    error_message TEXT,  -- для отладки ошибок обработки
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT TIMEZONE('utc', NOW())
+    raw_html TEXT,                      -- сырой HTML с Википедии
+    fetched_at TIMESTAMPTZ DEFAULT NOW(),
+    processed BOOLEAN DEFAULT FALSE,
+    error_message TEXT
 );
 
 -- Обработанные города (только нужные для анализа)
@@ -40,7 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_cities_active ON cities (is_active) WHERE is_acti
 CREATE INDEX IF NOT EXISTS idx_cities_region ON cities (region);
 CREATE INDEX IF NOT EXISTS idx_cities_federal_district ON cities (federal_district);
 CREATE INDEX IF NOT EXISTS idx_cities_population ON cities (population DESC NULLS LAST);
-CREATE INDEX IF NOT EXISTS idx_raw_cities_status ON raw_cities (status);
+CREATE INDEX IF NOT EXISTS idx_raw_cities_data_processed ON raw_cities_data (processed) WHERE processed = FALSE; 
 
 -- 4. Удалить старые таблицы (если они есть)
 DROP TABLE IF EXISTS weather_hourly CASCADE;

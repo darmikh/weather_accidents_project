@@ -26,7 +26,7 @@
 
 ### 3. Хранилище (Supabase PostgreSQL)
 **Основные таблицы:**
-- `raw_cities` - сырые данные из Wikipedia
+- `raw_cities_data` - сырые данные из Wikipedia
 - `cities` - обработанные города с координатами
 - `raw_weather_data` - сырые JSON от Open-Meteo
 - `weather_hourly` - почасовые погодные данные

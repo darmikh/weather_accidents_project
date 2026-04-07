@@ -16,7 +16,7 @@ src/etl/
   - `utils/text_utils.py` - нормализация строк
 
 ## Порядок выполнения
-1. Парсинг городов с Wikipedia - `raw_cities`
+1. Парсинг городов с Wikipedia - загрузка HTML в `raw_cities_data`
 2. Обработка координат - `cities`
 3. Получение кодов ГИБДД - обновление `cities`
 4. Загрузка погоды - `raw_weather_data` - `weather_hourly`

@@ -10,22 +10,17 @@
 
 ## 1. Таблицы с данными о городах
 
-### raw_cities
+### raw_cities_data
 
-Сырые данные, полученные при парсинге Wikipedia. Содержит исходную информацию о городах России до обработки.
+Сырые данные, полученные при парсинге Wikipedia. Содержит HTML страницы "Список городов России".
 
 | Поле | Тип | Описание |
 |------|-----|----------|
 | `id` | uuid | Уникальный идентификатор записи |
-| `row_number` | integer | Номер строки в исходной таблице Wikipedia |
-| `original_city_name` | text | Название города (как в Wikipedia) |
-| `original_region` | text | Регион (как в Wikipedia) |
-| `original_federal_district` | text | Федеральный округ |
-| `original_population` | text | Население (в виде текста, может содержать нечисловые символы) |
-| `parsed_at` | timestamptz | Дата и время парсинга |
-| `status` | text | Статус обработки (`pending`, `processed`, `error`) |
+| `raw_html` | text | Сырой HTML с Википедии |
+| `fetched_at` | timestamptz | Дата и время загрузки |
+| `processed` | boolean | Флаг обработки (парсинг завершен) |
 | `error_message` | text | Сообщение об ошибке (если была) |
-| `created_at` | timestamptz | Дата создания записи |
 
 ### cities
 
