@@ -273,7 +273,7 @@ def download_fresh_gibdd_data():
         gibdd_data = {
             "regions": {},
             "districts": {}
-        }
+        } 
         
         for i, region in enumerate(maps_data, 1):
             region_id = region["id"]
@@ -350,7 +350,7 @@ def find_region_id(region_name):
     Находит ID региона по названию с учетом маппинга
     """
     if not region_name:
-        return None
+        return None, None
     
     # Прямое совпадение с маппингом
     if region_name in REGION_NAME_MAPPING:

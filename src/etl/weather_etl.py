@@ -1,10 +1,9 @@
 """
-Загрузка ПОЛНЫХ почасовых погодных данных с Open-Meteo (2014-2025)
+Загрузка почасовых погодных данных с Open-Meteo (2014-2025)
 """
 import sys
 from pathlib import Path
 
-# Добавляем папку src в путь
 src_path = Path(__file__).parent.parent
 sys.path.append(str(src_path))
 
@@ -20,7 +19,7 @@ logger = get_logger('weather_etl')
 
 BASE_URL = "https://archive-api.open-meteo.com/v1/archive"
 
-# ПОЛНЫЙ список всех 23 метеопараметров
+# Полный список всех 23 метеопараметров
 HOURLY_PARAMS = [
     "temperature_2m",           # температура на 2м
     "relative_humidity_2m",     # относительная влажность
@@ -48,7 +47,7 @@ HOURLY_PARAMS = [
 ]
 
 def get_db_connection():
-    """Создает подключение к базе данных через SQLAlchemy"""
+    """Создает подключение к БД через SQLAlchemy"""
     user = os.getenv('SUPABASE_DB_USER')
     password = os.getenv('SUPABASE_DB_PASSWORD')
     host = os.getenv('SUPABASE_DB_HOST')
@@ -62,7 +61,6 @@ def get_db_connection():
     return create_engine(database_url)
 
 def get_active_cities():
-    """Получить активные города через прямой SQL-запрос"""
     logger.info("Получение списка активных городов")
     
     engine = get_db_connection()
@@ -93,7 +91,6 @@ def get_active_cities():
         return []
 
 def check_month_loaded(city_id, start_date, end_date, engine):
-    """Проверяет, загружен ли уже месяц через прямой SQL"""
     try:
         with engine.connect() as conn:
             result = conn.execute(
@@ -112,7 +109,6 @@ def check_month_loaded(city_id, start_date, end_date, engine):
         return False
 
 def save_raw_weather_data(city_id, start_date, end_date, raw_data, engine):
-    """Сохраняет сырые данные через прямой SQL"""
     try:
         with engine.connect() as conn:
             result = conn.execute(
@@ -145,7 +141,6 @@ def save_raw_weather_data(city_id, start_date, end_date, raw_data, engine):
         return None
 
 def save_hourly_weather(records, engine):
-    """Сохраняет почасовые данные через прямой SQL"""
     if not records:
         return 0
     
@@ -223,12 +218,10 @@ def load_full_weather():
                 
                 logger.info(f"Загрузка за {year}-{month:02d}...")
                 
-                # Проверяем, не загружены ли уже полные данные
                 if check_month_loaded(city['id'], start, end, engine):
                     logger.debug(f"Данные за {year}-{month:02d} уже есть в БД, пропускаем")
                     continue
                 
-                # Запрос к API с полным набором параметров
                 params = {
                     "latitude": city['latitude'],
                     "longitude": city['longitude'],
@@ -239,15 +232,13 @@ def load_full_weather():
                 }
                 
                 try:
-                    # Запрос к API
                     api_resp = requests.get(BASE_URL, params=params, timeout=45)
                     
                     if api_resp.status_code != 200:
                         logger.error(f"ошибка API: {api_resp.status_code}")
                         time.sleep(2)
                         continue
-                    
-                    # Подготавливаем сырые данные
+                
                     raw_data = {
                         'latitude': city['latitude'],
                         'longitude': city['longitude'],
@@ -256,7 +247,6 @@ def load_full_weather():
                         'hourly_data': api_resp.json(),
                     }
                     
-                    # Сохраняем сырые данные
                     raw_id = save_raw_weather_data(city['id'], start, end, raw_data, engine)
                     
                     if not raw_id:
@@ -266,7 +256,6 @@ def load_full_weather():
                     
                     logger.debug(f"RAW данные сохранены для {city['city_name']} {year}-{month:02d}, ID: {raw_id}")
                     
-                    # Сохраняем почасовые данные
                     hourly = api_resp.json().get('hourly', {})
                     times = hourly.get('time', [])
                     
@@ -274,7 +263,6 @@ def load_full_weather():
                         logger.warning(f"Нет данных за {year}-{month:02d} для города {city['city_name']}")
                         continue
                     
-                    # Создаем записи для каждого часа
                     records = []
                     for i in range(len(times)):
                         record = {
@@ -312,7 +300,6 @@ def load_full_weather():
                     
                     logger.info(f"  {year}-{month:02d}... загружено {saved} записей")
                     
-                    # Пауза между запросами
                     time.sleep(1.5)
                     
                 except Exception as e:

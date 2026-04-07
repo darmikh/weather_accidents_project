@@ -33,7 +33,7 @@ BATCH_SIZE = 50
 
 
 def get_db_connection():
-    """Создает подключение к базе данных через SQLAlchemy"""
+    """Создает подключение к БД через SQLAlchemy"""
     user = os.getenv('SUPABASE_DB_USER')
     password = os.getenv('SUPABASE_DB_PASSWORD')
     host = os.getenv('SUPABASE_DB_HOST')
@@ -47,7 +47,6 @@ def get_db_connection():
     return create_engine(database_url)
 
 def get_active_cities():
-    """Получить активные города через прямой SQL-запрос"""
     engine = get_db_connection()
     if not engine:
         return []
@@ -75,7 +74,6 @@ def get_active_cities():
         return []
 
 def get_last_loaded_month(city_id, engine):
-    """Получить последний загруженный месяц для города"""
     try:
         with engine.connect() as conn:
             result = conn.execute(
@@ -97,7 +95,6 @@ def get_last_loaded_month(city_id, engine):
         return None, None
 
 def month_loaded(city_id, year, month, engine):
-    """Проверить, загружен ли уже месяц"""
     try:
         with engine.connect() as conn:
             result = conn.execute(
@@ -116,7 +113,6 @@ def month_loaded(city_id, year, month, engine):
         return False
 
 def add_to_retry_queue(city_id, year, month, error, engine):
-    """Добавить месяц в очередь повторной обработки"""
     try:
         with engine.connect() as conn:
             check = conn.execute(
@@ -152,7 +148,6 @@ def add_to_retry_queue(city_id, year, month, error, engine):
             f.write(f"{city_id},{year},{month},{error}\n")
 
 def save_load_log(city_id, region_id, district_id, year, month, records_loaded, status, engine, error_message=None):
-    """Сохранить запись в лог загрузки"""
     try:
         with engine.connect() as conn:
             conn.execute(
@@ -237,7 +232,6 @@ def fetch_all_pages(region_id, district_id, year, month):
     return all_cards
 
 def parse_card(card, city_id):
-    """ПОЛНЫЙ парсинг карточки со всеми полями"""
     if not card:
         return None, None, [], []
     
@@ -368,7 +362,6 @@ def parse_card(card, city_id):
     return main, road, vehicles, participants
 
 def save_batch(table, data, engine):
-    """Сохраняет пачку данных через прямой SQL"""
     if not data:
         return
     
@@ -438,7 +431,6 @@ def save_batch(table, data, engine):
         logger.error(f"Ошибка при сохранении в {table}: {e}")
 
 def save_month(cards, city_id, region_id, district_id, year, month, engine):
-    """Сохранить данные за месяц"""
     
     today = datetime.now()
     
@@ -484,7 +476,6 @@ def save_month(cards, city_id, region_id, district_id, year, month, engine):
     return len(main_data)
 
 def process_retry_queue(engine):
-    """Обработать очередь повторных попыток"""
     try:
         with engine.connect() as conn:
             result = conn.execute(

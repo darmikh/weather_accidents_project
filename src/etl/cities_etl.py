@@ -160,7 +160,7 @@ class CitiesProcessor:
         db.update_raw_cities_data_status(staging_id, True)
         logger.info(f"Обработка завершена. Добавлено городов: {success_count}")
         
-    def _is_duplicate_city(self, city_name, region, population):
+    def _is_duplicate_city(self, city_name, region):
         if db.city_exists(city_name, region, fuzzy=False):
             logger.debug(f"Точное совпадение: {city_name}")
             return True
@@ -168,19 +168,15 @@ class CitiesProcessor:
         return False
     
     def clean_dataframe(self, df):
-        # Убеждаемся, что есть колонка с названием города
         if 'Город' not in df.columns:
-            for col in df.columns:
-                if 'город' in str(col).lower():
-                    df = df.rename(columns={col: 'Город'})
-                    break
+            raise ValueError("В таблице нет колонки 'Город'")
         
-        # Нормализуем названия городов
+        # Нормализуем названия городов с помощью функции из text_utils.py и удаляем пустые названия
         if 'Город' in df.columns:
             df['Город'] = df['Город'].apply(normalize_city_name)
             df = df[df['Город'].notna() & (df['Город'] != '')]
             
-        # Преобразуем население в число
+        # Преобразуем население в число (для анализа в дальнейшем)
         if 'Население' in df.columns:
             df['Население'] = pd.to_numeric(
                 df['Население'].astype(str).str.replace(r'[^\d]', '', regex=True), 
@@ -204,7 +200,6 @@ class CitiesProcessor:
         try:
             soup = BeautifulSoup(raw_html, 'html.parser')
             
-            # Ищем таблицу
             target_table = None
             
             wikitable = soup.find('table', {'class': 'wikitable'})
@@ -231,14 +226,12 @@ class CitiesProcessor:
                 logger.error("Таблица с городами не найдена")
                 return pd.DataFrame()
             
-            # Парсим заголовки
             headers = []
             header_row = target_table.find('tr')
             if header_row:
                 for th in header_row.find_all(['th', 'td']):
                     headers.append(th.get_text(strip=True))
             
-            # Парсим данные
             data = []
             rows = target_table.find_all('tr')[1:]
         
@@ -340,7 +333,7 @@ def main():
     staging_id = loader.run()
     
     if not staging_id:
-        logger.error("Не удалось загрузить данные, обработка остановлена")
+        logger.error("Не удалось загрузить сырые данные, обработка остановлена")
         return
     
     # 2. Обрабатываем данные
