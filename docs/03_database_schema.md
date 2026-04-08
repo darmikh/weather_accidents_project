@@ -37,7 +37,7 @@
 | `latitude` | float8 | Широта |
 | `longitude` | float8 | Долгота |
 | `is_active` | boolean | Флаг активности для анализа |
-| `raw_city_id` | uuid | Ссылка на исходную запись в `raw_cities` |
+| `raw_city_id` | uuid | 
 | `gibdd_region_id` | text | ID региона в системе ГИБДД |
 | `gibdd_district_id` | text | ID муниципалитета/города в системе ГИБДД |
 | `created_at` | timestamptz | Дата создания записи |
