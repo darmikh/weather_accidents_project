@@ -11,6 +11,7 @@ import requests
 import time
 from sqlalchemy import create_engine, text
 import os
+import json
 from database import db
 from etl.logger_config import get_logger
 from config import config
@@ -129,7 +130,7 @@ def save_raw_weather_data(city_id, start_date, end_date, raw_data, engine):
                     "end_date": end_date,
                     "request_url": raw_data['request_url'],
                     "response_status": raw_data['response_status'],
-                    "hourly_data": raw_data['hourly_data'],
+                    "hourly_data": json.dumps(raw_data['hourly_data']),
                     "source": 'open-meteo-full'
                 }
             )
@@ -232,7 +233,7 @@ def load_full_weather():
                 }
                 
                 try:
-                    api_resp = requests.get(BASE_URL, params=params, timeout=45)
+                    api_resp = requests.get(BASE_URL, params=params, timeout=60)
                     
                     if api_resp.status_code != 200:
                         logger.error(f"ошибка API: {api_resp.status_code}")

@@ -579,7 +579,7 @@ def update_all():
             
             if is_recent:
                 # Для последних 6 месяцев - всегда загружаем (перепроверяем)
-                logger.info(f"Перепроверка {year}-{month:02d} (последние {MONTHS_TO_REFRESH} месяцев)")
+                logger.info(f"Перепроверка {year}-{month:02d} (последние {config.MONTHS_TO_REFRESH} месяцев)")
                 cards = fetch_with_retry(region_id, district_id, year, month)
                 if cards is None:
                     add_to_retry_queue(city_id, year, month, "Connection error", engine)
