@@ -125,7 +125,7 @@ class CitiesProcessor:
                 continue
             
             # Проверяем дубликаты (явные и неявные)
-            if self._is_duplicate_city(city_name, region, population):
+            if self._is_duplicate_city(city_name, region):
                 logger.debug(f"Город {city_name} уже существует (или похож), пропускаем")
                 continue
             

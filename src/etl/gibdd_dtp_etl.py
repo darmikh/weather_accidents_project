@@ -417,6 +417,11 @@ def save_batch(table, data, engine):
         """
     }
     
+    if table == 'dtp_main':
+        for record in data:
+            if 'raw_data' in record and isinstance(record['raw_data'], dict):
+                record['raw_data'] = json.dumps(record['raw_data'])
+    
     if table not in table_map:
         logger.error(f"Неизвестная таблица: {table}")
         return
@@ -444,10 +449,10 @@ def save_month(cards, city_id, region_id, district_id, year, month, engine):
     if not cards:
         # Если месяц еще не закончился и нет данных - не пишем success
         if month_ended:
-            logger.info(f"Месяц {year}-{month:02d} закончился, данных нет")
+            logger.info(f"Месяц {year}-{month:02d} закончился, ДТП нет (API вернул пустой список)")
             save_load_log(city_id, region_id, district_id, year, month, 0, 'success', engine)
         else:
-            logger.info(f"Месяц {year}-{month:02d} еще не закончился, данных пока нет - пропускаем логирование")
+            logger.info(f"Месяц {year}-{month:02d} еще не закончился, данных пока нет")
             # Не пишем в лог, чтобы позже попробовать снова
         return 0
     
@@ -534,8 +539,9 @@ def update_all():
         logger.error("Нет активных городов")
         return
     
-    current_year = config.END_YEAR   
-    current_month = 12               
+    today = datetime.now()
+    current_year = today.year
+    current_month = today.month              
     
     # Вычисляем границу для полного обновления (последние 6 месяцев)
     refresh_year = current_year
@@ -544,6 +550,7 @@ def update_all():
         refresh_month += 12
         refresh_year -= 1
     
+    logger.info(f"Текущая дата: {today.strftime('%Y-%m')}")
     logger.info(f"Будут полностью перепроверены (обновлены) месяцы начиная с {refresh_year}-{refresh_month:02d}")
     
     for city in cities:

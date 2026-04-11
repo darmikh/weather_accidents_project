@@ -12,6 +12,7 @@ import time
 from sqlalchemy import create_engine, text
 import os
 import json
+from datetime import datetime
 from database import db
 from etl.logger_config import get_logger
 from config import config
@@ -206,6 +207,11 @@ def load_full_weather():
         for year in range(config.START_YEAR, config.END_YEAR + 1):
             for month in range(1, 13):  # 12 месяцев
                 # Формируем даты месяца
+                current_date = datetime.now()
+                if year > current_date.year or (year == current_date.year and month > current_date.month):
+                    logger.info(f"Месяц {year}-{month:02d} в будущем, пропускаем")
+                    continue
+                
                 start = f"{year}-{month:02d}-01"
                 
                 if month in [1, 3, 5, 7, 8, 10, 12]:
@@ -232,81 +238,94 @@ def load_full_weather():
                     "timezone": "auto"
                 }
                 
-                try:
-                    api_resp = requests.get(BASE_URL, params=params, timeout=60)
-                    
-                    if api_resp.status_code != 200:
-                        logger.error(f"ошибка API: {api_resp.status_code}")
-                        time.sleep(2)
-                        continue
+                api_resp = None
+                for attempt in range(3):
+                    try:
+                        api_resp = requests.get(BASE_URL, params=params, timeout=90)
+                        if api_resp.status_code == 200:
+                            break
+                        else:
+                            logger.warning(f"Ошибка API: {api_resp.status_code}, попытка {attempt + 1}/3")
+                            time.sleep(5)
+                    except requests.exceptions.Timeout:
+                        logger.warning(f"Таймаут, попытка {attempt + 1}/3")
+                        if attempt < 2:
+                            time.sleep(5)
+                        else:
+                            raise
+                    except Exception as e:
+                        logger.error(f"Ошибка при запросе: {e}, попытка {attempt + 1}/3")
+                        if attempt < 2:
+                            time.sleep(5)
+                        else:
+                            raise
                 
-                    raw_data = {
-                        'latitude': city['latitude'],
-                        'longitude': city['longitude'],
-                        'request_url': api_resp.url,
-                        'response_status': api_resp.status_code,
-                        'hourly_data': api_resp.json(),
-                    }
-                    
-                    raw_id = save_raw_weather_data(city['id'], start, end, raw_data, engine)
-                    
-                    if not raw_id:
-                        logger.error(f"Ошибка сохранения RAW данных для {city['city_name']} {year}-{month:02d}")
-                        time.sleep(2)
-                        continue
-                    
-                    logger.debug(f"RAW данные сохранены для {city['city_name']} {year}-{month:02d}, ID: {raw_id}")
-                    
-                    hourly = api_resp.json().get('hourly', {})
-                    times = hourly.get('time', [])
-                    
-                    if not times:
-                        logger.warning(f"Нет данных за {year}-{month:02d} для города {city['city_name']}")
-                        continue
-                    
-                    records = []
-                    for i in range(len(times)):
-                        record = {
-                            'city_id': city['id'],
-                            'datetime': times[i],
-                            'temperature_2m': hourly.get('temperature_2m', [None])[i],
-                            'relative_humidity_2m': hourly.get('relative_humidity_2m', [None])[i],
-                            'dew_point_2m': hourly.get('dew_point_2m', [None])[i],
-                            'apparent_temperature': hourly.get('apparent_temperature', [None])[i],
-                            'precipitation': hourly.get('precipitation', [None])[i],
-                            'rain': hourly.get('rain', [None])[i],
-                            'snowfall': hourly.get('snowfall', [None])[i],
-                            'snow_depth': hourly.get('snow_depth', [None])[i],
-                            'cloud_cover': hourly.get('cloud_cover', [None])[i],
-                            'cloud_cover_low': hourly.get('cloud_cover_low', [None])[i],
-                            'cloud_cover_mid': hourly.get('cloud_cover_mid', [None])[i],
-                            'cloud_cover_high': hourly.get('cloud_cover_high', [None])[i],
-                            'pressure_msl': hourly.get('pressure_msl', [None])[i],
-                            'surface_pressure': hourly.get('surface_pressure', [None])[i],
-                            'wind_speed_10m': hourly.get('wind_speed_10m', [None])[i],
-                            'wind_speed_100m': hourly.get('wind_speed_100m', [None])[i],
-                            'wind_direction_100m': hourly.get('wind_direction_100m', [None])[i],
-                            'wind_gusts_10m': hourly.get('wind_gusts_10m', [None])[i],
-                            'shortwave_radiation': hourly.get('shortwave_radiation', [None])[i],
-                            'direct_radiation': hourly.get('direct_radiation', [None])[i],
-                            'diffuse_radiation': hourly.get('diffuse_radiation', [None])[i],
-                            'direct_normal_irradiance': hourly.get('direct_normal_irradiance', [None])[i],
-                            'terrestrial_radiation': hourly.get('terrestrial_radiation', [None])[i],
-                            'raw_weather_id': raw_id
-                        }
-                        records.append(record)
-                    
-                    # Вставляем пачками
-                    saved = save_hourly_weather(records, engine)
-                    
-                    logger.info(f"  {year}-{month:02d}... загружено {saved} записей")
-                    
-                    time.sleep(1.5)
-                    
-                except Exception as e:
-                    logger.error(f"Ошибка при загрузке {year}-{month:02d} для города {city['city_name']}: {type(e).__name__} - {e}")
+                if api_resp is None or api_resp.status_code != 200:
+                    logger.error(f"Не удалось загрузить данные за {year}-{month:02d} после 3 попыток")
                     time.sleep(3)
                     continue
+                
+                raw_data = {
+                    'latitude': city['latitude'],
+                    'longitude': city['longitude'],
+                    'request_url': api_resp.url,
+                    'response_status': api_resp.status_code,
+                    'hourly_data': api_resp.json(),
+                }
+                    
+                raw_id = save_raw_weather_data(city['id'], start, end, raw_data, engine)
+                    
+                if not raw_id:
+                    logger.error(f"Ошибка сохранения RAW данных для {city['city_name']} {year}-{month:02d}")
+                    time.sleep(2)
+                    continue
+                    
+                logger.debug(f"RAW данные сохранены для {city['city_name']} {year}-{month:02d}, ID: {raw_id}")
+                    
+                hourly = api_resp.json().get('hourly', {})
+                times = hourly.get('time', [])
+                    
+                if not times:
+                    logger.warning(f"Нет данных за {year}-{month:02d} для города {city['city_name']}")
+                    continue
+                    
+                records = []
+                for i in range(len(times)):
+                    record = {
+                        'city_id': city['id'],
+                        'datetime': times[i],
+                        'temperature_2m': hourly.get('temperature_2m', [None])[i],
+                        'relative_humidity_2m': hourly.get('relative_humidity_2m', [None])[i],
+                        'dew_point_2m': hourly.get('dew_point_2m', [None])[i],
+                        'apparent_temperature': hourly.get('apparent_temperature', [None])[i],
+                        'precipitation': hourly.get('precipitation', [None])[i],
+                        'rain': hourly.get('rain', [None])[i],
+                        'snowfall': hourly.get('snowfall', [None])[i],
+                        'snow_depth': hourly.get('snow_depth', [None])[i],
+                        'cloud_cover': hourly.get('cloud_cover', [None])[i],
+                        'cloud_cover_low': hourly.get('cloud_cover_low', [None])[i],
+                        'cloud_cover_mid': hourly.get('cloud_cover_mid', [None])[i],
+                        'cloud_cover_high': hourly.get('cloud_cover_high', [None])[i],
+                        'pressure_msl': hourly.get('pressure_msl', [None])[i],
+                        'surface_pressure': hourly.get('surface_pressure', [None])[i],
+                        'wind_speed_10m': hourly.get('wind_speed_10m', [None])[i],
+                        'wind_speed_100m': hourly.get('wind_speed_100m', [None])[i],
+                        'wind_direction_100m': hourly.get('wind_direction_100m', [None])[i],
+                        'wind_gusts_10m': hourly.get('wind_gusts_10m', [None])[i],
+                        'shortwave_radiation': hourly.get('shortwave_radiation', [None])[i],
+                        'direct_radiation': hourly.get('direct_radiation', [None])[i],
+                        'diffuse_radiation': hourly.get('diffuse_radiation', [None])[i],
+                        'direct_normal_irradiance': hourly.get('direct_normal_irradiance', [None])[i],
+                        'terrestrial_radiation': hourly.get('terrestrial_radiation', [None])[i],
+                        'raw_weather_id': raw_id
+                    }
+                    records.append(record)
+                    
+                # Вставляем пачками
+                saved = save_hourly_weather(records, engine)
+                logger.info(f"  {year}-{month:02d}... загружено {saved} записей")
+                    
+                time.sleep(1.5)
     
     logger.info("Загрузка погодных данных завершена")
 
