@@ -18,7 +18,7 @@ class Config:
     SUPABASE_DB_PORT = os.getenv('SUPABASE_DB_PORT')
     
     START_YEAR = 2015
-    END_YEAR = 2025  # последний полный год
+    END_YEAR = 2026  # последний полный год
     
     MONTHS_TO_REFRESH = 6  # количество месяцев для перепроверки данных о ДТП
     
