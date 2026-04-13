@@ -165,11 +165,20 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY mv_dtp_analytics;
 - Проверьте, что для городов указаны `gibdd_region_id` и `gibdd_district_id`
 - Попробуйте запустить скрипт с включенным VPN
 
-### 3. Логирование
+### 3. Альтернативная загрузка ДТП (REST API версия)
+
+Если при запуске `main.py` возникает ошибка `server closed the connection unexpectedly` или проблемы с SQLAlchemy, используйте альтернативный скрипт:
+
+```bash
+cd src/etl
+python gibdd_dtp_etl_rest.py
+```
+
+### 4. Логирование
 
 Все логи сохраняются в папку `logs/`. Проверьте файл `etl_YYYYMM.log` для деталей.
 
-### 4. Ошибки GitHub Actions
+### 5. Ошибки GitHub Actions
 
 - Проверьте, что все секреты добавлены в настройках репозитория
 - Посмотрите логи выполнения в разделе Actions

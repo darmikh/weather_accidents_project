@@ -19,6 +19,7 @@
 - `gibdd_okato_etl.py` - получение кодов ГИБДД
 - `weather_etl.py` - загрузка погоды
 - `gibdd_dtp_etl.py` - загрузка ДТП
+- `gibdd_dtp_etl_rest.py` - локальная загрузка ДТП через REST API (вместо SQLAlchemy) 
 - `refresh_datamart.py` - обновление витрины
 - `database.py` - работа с Supabase API
 - `logger_config.py` - настройка логирования
