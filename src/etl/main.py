@@ -61,7 +61,7 @@ def main():
             logger.info("REST API не доступен, пропускаем шаги с городами")
         
         # 4. Загрузка погодных данных
-        run_etl_step("Загрузка погодных данных", load_full_weather)
+        #run_etl_step("Загрузка погодных данных", load_full_weather)
         
         # 5. Загрузка данных о ДТП
         run_etl_step("Загрузка данных о ДТП", load_dtp_data)
